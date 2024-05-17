@@ -592,7 +592,12 @@ mod test {
                 }
             }
             .to_bytes();
-            script_buf.extend_from_slice(get_script().as_bytes());
+            let script_body = get_script();
+
+            if input_num == 1 {
+                println!("counter.len = {} bytes", script_body.len());
+            }
+            script_buf.extend_from_slice(script_body.as_bytes());
 
             let script = Script::from_bytes(script_buf);
             let mut exec = Exec::new(
