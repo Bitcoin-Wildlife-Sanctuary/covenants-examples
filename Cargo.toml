@@ -14,6 +14,10 @@ sha2 = "0.10.8"
 hex = "0.4.3"
 covenants-gadgets = { git = "https://github.com/Bitcoin-Wildlife-Sanctuary/covenants" }
 lazy_static = "1.4.0"
+log = "0.4.21"
+
+[dev-dependencies]
+bitcoin-simulator = { git = "https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-simulator"}
 
 [profile.dev]
 opt-level = 3

@@ -23,7 +23,7 @@ use std::str::FromStr;
 
 pub struct Information {
     pub prev_counter: u32,
-    pub prev_randomness: u32,
+    pub prev_randomizer: u32,
     pub prev_balance: u64,
     pub prev_txid: Txid,
 
@@ -66,7 +66,7 @@ pub fn get_taproot() -> ScriptBuf {
     script_pub_key
 }
 
-pub fn get_tx_and_hints(information: &Information) -> (TxTemplate, Vec<Vec<u8>>) {
+pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
     let secp = bitcoin::secp256k1::Secp256k1::new();
     let internal_key = UntweakedPublicKey::from(
         bitcoin::secp256k1::PublicKey::from_str(
@@ -106,7 +106,7 @@ pub fn get_tx_and_hints(information: &Information) -> (TxTemplate, Vec<Vec<u8>>)
 
     tx.input.push(TxIn {
         previous_output: OutPoint::new(information.prev_txid.clone(), 0),
-        script_sig: script_pub_key.clone(),
+        script_sig: ScriptBuf::new(),
         sequence: Sequence::default(),
         witness: Witness::new(), // placeholder
     });
@@ -257,7 +257,16 @@ pub fn get_tx_and_hints(information: &Information) -> (TxTemplate, Vec<Vec<u8>>)
     }
 
     // previous randomness
-    script_execution_witness.push(information.prev_randomness.to_le_bytes().to_vec());
+    script_execution_witness.push(information.prev_randomizer.to_le_bytes().to_vec());
+
+    let mut script_tx_witness = Witness::new();
+    for elem in script_execution_witness.iter() {
+        script_tx_witness.push(elem);
+    }
+    script_tx_witness.push(script);
+    script_tx_witness.push(control_block_bytes);
+
+    tx.input[0].witness = script_tx_witness;
 
     let tx_template = TxTemplate {
         tx,
@@ -269,7 +278,7 @@ pub fn get_tx_and_hints(information: &Information) -> (TxTemplate, Vec<Vec<u8>>)
         taproot_annex_scriptleaf: Some((tap_leaf_hash.clone(), None)),
     };
 
-    (tx_template, script_execution_witness)
+    (tx_template, randomizer)
 }
 
 pub fn get_script() -> Script {
@@ -494,18 +503,18 @@ pub fn get_script() -> Script {
 
 #[cfg(test)]
 mod test {
-    use crate::counter::{get_script, get_taproot, get_tx_and_hints, Information};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use crate::counter::{get_script, get_taproot, get_tx, Information};
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
     use bitcoin::opcodes::all::OP_RETURN;
     use bitcoin::transaction::Version;
-    use bitcoin::{
-        Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
-        WitnessProgram,
-    };
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness, WitnessProgram, WScriptHash};
     use bitcoin_scriptexec::{Exec, ExecCtx, Options};
+    use bitcoin_simulator::database::Database;
     use bitvm::treepp::*;
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng, RngCore, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     #[test]
@@ -572,7 +581,7 @@ mod test {
 
             let information = Information {
                 prev_counter,
-                prev_randomness,
+                prev_randomizer: prev_randomness,
                 prev_balance: prev_tx.output[0].value.to_sat(),
                 prev_txid: prev_tx.compute_txid(),
                 prev_tx_outpoint1: prev_tx.input[0].previous_output.clone(),
@@ -584,10 +593,11 @@ mod test {
                 new_balance: 78910,
             };
 
-            let (tx_template, witness) = get_tx_and_hints(&information);
+            let (tx_template, _) = get_tx(&information);
+            let witness = &tx_template.tx.input[0].witness;
 
             let mut script_buf = script! {
-                for entry in witness.iter() {
+                for entry in witness.iter().take(witness.len() - 2) {
                     { entry.to_vec() }
                 }
             }
@@ -616,6 +626,132 @@ mod test {
             }
             let res = exec.result().unwrap();
             assert!(res.success);
+        }
+    }
+
+    #[test]
+    fn test_simulation() {
+        let prng = Rc::new(RefCell::new(ChaCha20Rng::seed_from_u64(0)));
+        let get_rand_txid = || {
+            let mut bytes = [0u8; 20];
+            prng.borrow_mut().fill_bytes(&mut bytes);
+            Txid::hash(&bytes)
+        };
+
+        let db = Database::connect_temporary_database().unwrap();
+
+        let script_pub_key = get_taproot();
+
+        // create the first tx and accept it unconditionally
+        let init_tx = Transaction {
+            version: Version::ONE,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: get_rand_txid(),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::default(),
+                sequence: Sequence::default(),
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000_000_000),
+                script_pubkey: script_pub_key.clone()
+            }, TxOut {
+                value: Amount::ZERO,
+                script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(
+                    &[OP_RETURN.to_u8(), 0, 0, 0, 0, 12, 0, 0, 0]
+                ))
+            }],
+        };
+
+        db.insert_transaction_unconditionally(&init_tx).unwrap();
+
+        let trivial_p2wsh_script = script! {
+            OP_TRUE
+        };
+
+        let trivial_p2wsh_script_pubkey = ScriptBuf::new_p2wsh(&WScriptHash::hash(trivial_p2wsh_script.as_bytes()));
+
+        let mut trivial_p2wsh_witness = Witness::new();
+        trivial_p2wsh_witness.push([]);
+        trivial_p2wsh_witness.push(trivial_p2wsh_script);
+
+        let mut prev_counter = 0u32;
+        let mut prev_randomizer = 12u32;
+        let mut prev_balance = 1_000_000_000u64;
+        let mut prev_txid = init_tx.compute_txid();
+
+        let mut prev_tx_outpoint1 = init_tx.input[0].previous_output;
+        let mut prev_tx_outpoint2 = None;
+
+        for _ in 0..100 {
+            let has_fee_paying_input = prng.borrow_mut().gen::<bool>();
+
+            let fee_paying_input = if has_fee_paying_input {
+                let fee_tx = Transaction {
+                    version: Version::ONE,
+                    lock_time: LockTime::ZERO,
+                    input: vec![TxIn {
+                        previous_output: OutPoint {
+                            txid: get_rand_txid(),
+                            vout: 0xffffffffu32,
+                        },
+                        script_sig: ScriptBuf::new(),
+                        sequence: Sequence::default(),
+                        witness: Witness::new(),
+                    }], // a random input is needed to avoid TXID collision.
+                    output: vec![TxOut {
+                        value: Amount::from_sat(123_456_000),
+                        script_pubkey: trivial_p2wsh_script_pubkey.clone(),
+                    }],
+                };
+
+                db.insert_transaction_unconditionally(&fee_tx).unwrap();
+
+                Some(TxIn {
+                    previous_output: OutPoint {
+                        txid: fee_tx.compute_txid(),
+                        vout: 0,
+                    },
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::default(),
+                    witness: trivial_p2wsh_witness.clone(),
+                })
+            } else {
+                None
+            };
+
+            let mut new_balance = prev_balance;
+            if fee_paying_input.is_some() {
+                new_balance += 123_456_000;
+            }
+            new_balance -= 1; // as for transaction fee
+
+            let information = Information {
+                prev_counter,
+                prev_randomizer,
+                prev_balance,
+                prev_txid: prev_txid.clone(),
+                prev_tx_outpoint1: prev_tx_outpoint1.clone(),
+                prev_tx_outpoint2: prev_tx_outpoint2.clone(),
+                fee_paying_input,
+                new_balance,
+            };
+
+            let (tx_template, randomizer) = get_tx(&information);
+
+            assert!(db.verify_transaction(&tx_template.tx).is_ok());
+            db.insert_transaction_unconditionally(&tx_template.tx).unwrap();
+
+            prev_counter += 1;
+            prev_randomizer = randomizer;
+            prev_balance = new_balance;
+            prev_txid = tx_template.tx.compute_txid();
+
+            prev_tx_outpoint1 = tx_template.tx.input[0].previous_output;
+            prev_tx_outpoint2 = tx_template.tx.input.get(1).and_then(|x| Some(x.previous_output.clone()));
         }
     }
 }
