@@ -21,31 +21,35 @@ use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use sha2::Digest;
 use std::str::FromStr;
 
-pub struct Information {
+/// Information necessary to create the new transaction.
+pub struct CounterUpdateInfo {
+    /// The counter value stored in the previous caboose.
     pub prev_counter: u32,
+    /// The randomizer used in the previous caboose (for the Schnorr trick to work).
     pub prev_randomizer: u32,
+    /// The balance of the previous program.
     pub prev_balance: u64,
+    /// The txid of the previous program.
     pub prev_txid: Txid,
 
+    /// The first input's outpoint of the transaction with txid.
     pub prev_tx_outpoint1: OutPoint,
+    /// The second input's outpoint of the transaction with txid.
+    /// Note: the second input is optional.
     pub prev_tx_outpoint2: Option<OutPoint>,
 
-    pub fee_paying_input: Option<TxIn>,
+    /// The second input in the new transaction, used to deposit more money into the program.
+    /// Note: The witness must be provided for this input.
+    pub optional_deposit_input: Option<TxIn>,
 
+    /// The balance of the new program, which needs to be smaller than the old balance plus the deposit,
+    /// but does not need to equal (some sats will be used to cover the transaction fee).
     pub new_balance: u64,
 }
 
-// structure:
-//
-// input:
-//   this program
-//   another paying input
-//
-// output:
-//   this program (copy)
-//   new state: OP_RETURN (4 bytes for the counter value) (4 bytes for randomness)
-
-pub fn get_taproot() -> ScriptBuf {
+/// Compute the taproot of the script (which only has the script path, but not the key path).
+pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
+    // Build the witness program.
     let secp = bitcoin::secp256k1::Secp256k1::new();
     let internal_key = UntweakedPublicKey::from(
         bitcoin::secp256k1::PublicKey::from_str(
@@ -62,32 +66,10 @@ pub fn get_taproot() -> ScriptBuf {
     let witness_program =
         WitnessProgram::p2tr(&secp, internal_key, taproot_spend_info.merkle_root());
 
+    // Derive the script pub key.
     let script_pub_key = ScriptBuf::new_witness_program(&witness_program);
-    script_pub_key
-}
 
-pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    let internal_key = UntweakedPublicKey::from(
-        bitcoin::secp256k1::PublicKey::from_str(
-            "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
-        )
-        .unwrap(),
-    );
-
-    let script = get_script();
-
-    let taproot_builder = TaprootBuilder::new().add_leaf(0, script.clone()).unwrap();
-    let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
-
-    let witness_program =
-        WitnessProgram::p2tr(&secp, internal_key, taproot_spend_info.merkle_root());
-
-    let tap_leaf_hash = TapLeafHash::from_script(
-        &ScriptBuf::from_bytes(script.to_bytes()),
-        LeafVersion::TapScript,
-    );
-
+    // Compute the control block.
     let mut control_block_bytes = Vec::new();
     taproot_spend_info
         .control_block(&(script.clone(), LeafVersion::TapScript))
@@ -95,8 +77,20 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
         .encode(&mut control_block_bytes)
         .unwrap();
 
-    let script_pub_key = ScriptBuf::new_witness_program(&witness_program);
+    (script_pub_key, control_block_bytes)
+}
 
+/// Generate the new transaction and return the new transaction as well as the randomizer
+pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
+    // Compute the script pub key, control block, and tap leaf hash.
+    let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
+    let script = get_script();
+    let tap_leaf_hash = TapLeafHash::from_script(
+        &ScriptBuf::from_bytes(script.to_bytes()),
+        LeafVersion::TapScript,
+    );
+
+    // Initialize a new transaction.
     let mut tx = Transaction {
         version: Version::ONE,
         lock_time: LockTime::ZERO,
@@ -104,28 +98,37 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
         output: vec![],
     };
 
+    // Push the previous program as the first input, with the witness left blank as a placeholder.
     tx.input.push(TxIn {
-        previous_output: OutPoint::new(information.prev_txid.clone(), 0),
+        previous_output: OutPoint::new(info.prev_txid.clone(), 0),
         script_sig: ScriptBuf::new(),
         sequence: Sequence::default(),
         witness: Witness::new(), // placeholder
     });
 
-    if let Some(input) = &information.fee_paying_input {
+    // If there is an optional deposit input, include it as well.
+    if let Some(input) = &info.optional_deposit_input {
         tx.input.push(input.clone());
     }
 
+    // Push the first output, which is the new program (and the only change is in the balance).
     tx.output.push(TxOut {
-        value: Amount::from_sat(information.new_balance),
+        value: Amount::from_sat(info.new_balance),
         script_pubkey: script_pub_key.clone(),
     });
 
-    let new_counter = information.prev_counter + 1;
+    // Increment the counter by 1, which would give us the new counter.
+    let new_counter = info.prev_counter + 1;
 
+    // Start the search of a working randomizer from 0.
     let mut randomizer = 0u32;
 
+    // Initialize a placeholder for e, which is the signature element "e" in Schnorr signature.
+    // Finding e relies on trial-and-error. Specifically, e is a tagged hash of the signature preimage,
+    // and the signature preimage is calculated by serializing the transaction in a specific way.
     let e;
     loop {
+        // Generate the corresponding caboose with the new counter.
         let witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
             OP_RETURN.to_u8(),
             (new_counter & 0xff) as u8,
@@ -138,20 +141,25 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
             ((randomizer >> 24) & 0xff) as u8,
         ]));
 
+        // Temporarily insert this output.
+        // If this output doesn't work, in a later step, we will revert the insertion and remove this
+        // output from the transaction.
         tx.output.push(TxOut {
             value: Amount::ZERO,
             script_pubkey: ScriptBuf::new_witness_program(&witness_program),
         });
 
+        // Initialize the SighashCache object for computing the signature preimage.
         let mut sighashcache = SighashCache::new(tx.clone());
 
+        // Compute the taproot hash assuming AllPlusAnyoneCanPay.
         let hash = sighashcache
             .taproot_script_spend_signature_hash(
                 0,
                 &Prevouts::One(
                     0,
                     &TxOut {
-                        value: Amount::from_sat(information.prev_balance),
+                        value: Amount::from_sat(info.prev_balance),
                         script_pubkey: script_pub_key.clone(),
                     },
                 ),
@@ -161,8 +169,8 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
             .unwrap()
             .into_32();
 
+        // Compute the tagged hash of the signature preimage.
         let bip340challenge_prefix = get_hashed_tag("BIP0340/challenge");
-
         let mut sha256 = sha2::Sha256::new();
         Digest::update(&mut sha256, &bip340challenge_prefix);
         Digest::update(&mut sha256, &bip340challenge_prefix);
@@ -171,42 +179,27 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
         Digest::update(&mut sha256, hash);
         let e_expected = sha256.finalize().to_vec();
 
+        // If the signature preimage ends with 0x01 (which is consistent to the Schnorr trick),
+        // we will accept this randomizer.
+        //
+        // Note: this is in fact not a strict requirement that it needs to be ending at 0x01.
+        // Nevertheless, requiring so makes sure that we can avoid the corner case (ending at 0xff),
+        // and it is consistent with the Schnorr trick article.
         if e_expected[31] == 0x01 {
             e = Some(e_expected);
-
-            let mut sighashcache = SighashCache::new(tx.clone());
-
-            let mut bytes = vec![];
-            sighashcache
-                .taproot_encode_signing_data_to(
-                    &mut bytes,
-                    0,
-                    &Prevouts::One(
-                        0,
-                        &TxOut {
-                            value: Amount::from_sat(information.prev_balance),
-                            script_pubkey: script_pub_key.clone(),
-                        },
-                    ),
-                    None,
-                    Some((tap_leaf_hash, 0xffffffffu32)),
-                    TapSighashType::AllPlusAnyoneCanPay,
-                )
-                .unwrap();
-
             break;
         } else {
+            // Remove the nonfunctional output and retry.
             tx.output.pop().unwrap();
             randomizer += 1;
         }
     }
 
     // now start preparing the witness
-
     let mut script_execution_witness = Vec::<Vec<u8>>::new();
 
     // new balance (8 bytes)
-    script_execution_witness.push(information.new_balance.to_le_bytes().to_vec());
+    script_execution_witness.push(info.new_balance.to_le_bytes().to_vec());
 
     // this script's scriptpubkey (34 bytes)
     script_execution_witness.push(script_pub_key.to_bytes());
@@ -218,34 +211,30 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
     script_execution_witness.push(randomizer.to_le_bytes().to_vec());
 
     // previous tx's txid (32 bytes)
-    script_execution_witness.push(AsRef::<[u8]>::as_ref(&information.prev_txid).to_vec());
+    script_execution_witness.push(AsRef::<[u8]>::as_ref(&info.prev_txid).to_vec());
 
     // previous balance (8 bytes)
-    script_execution_witness.push(information.prev_balance.to_le_bytes().to_vec());
+    script_execution_witness.push(info.prev_balance.to_le_bytes().to_vec());
 
     // tap leaf hash (32 bytes)
     script_execution_witness.push(AsRef::<[u8]>::as_ref(&tap_leaf_hash).to_vec());
 
-    // the sha256 without the last byte
+    // the sha256 without the last byte (31 bytes)
     script_execution_witness.push(e.unwrap()[0..31].to_vec());
 
-    // the first outpoint
+    // the first outpoint (32 + 4 = 36 bytes)
     {
         let mut bytes = vec![];
-        information
-            .prev_tx_outpoint1
-            .consensus_encode(&mut bytes)
-            .unwrap();
+        info.prev_tx_outpoint1.consensus_encode(&mut bytes).unwrap();
 
         script_execution_witness.push(bytes);
     }
 
-    // the second outpoint
+    // the second outpoint (0 or 36 bytes)
     {
-        if information.prev_tx_outpoint2.is_some() {
+        if info.prev_tx_outpoint2.is_some() {
             let mut bytes = vec![];
-            information
-                .prev_tx_outpoint2
+            info.prev_tx_outpoint2
                 .unwrap()
                 .consensus_encode(&mut bytes)
                 .unwrap();
@@ -256,22 +245,28 @@ pub fn get_tx(information: &Information) -> (TxTemplate, u32) {
         }
     }
 
-    // previous randomness
-    script_execution_witness.push(information.prev_randomizer.to_le_bytes().to_vec());
+    // previous randomizer
+    script_execution_witness.push(info.prev_randomizer.to_le_bytes().to_vec());
 
+    // Construct the witness that will be included in the TxIn.
     let mut script_tx_witness = Witness::new();
+    // all the initial stack elements
     for elem in script_execution_witness.iter() {
         script_tx_witness.push(elem);
     }
+    // the full script
     script_tx_witness.push(script);
+    // the control block bytes
     script_tx_witness.push(control_block_bytes);
 
+    // Include the witness in the TxIn.
     tx.input[0].witness = script_tx_witness;
 
+    // Prepare the TxTemplate.
     let tx_template = TxTemplate {
         tx,
         prevouts: vec![TxOut {
-            value: Amount::from_sat(information.prev_balance),
+            value: Amount::from_sat(info.prev_balance),
             script_pubkey: script_pub_key.clone(),
         }],
         input_idx: 0,
@@ -503,19 +498,24 @@ pub fn get_script() -> Script {
 
 #[cfg(test)]
 mod test {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use crate::counter::{get_script, get_taproot, get_tx, Information};
+    use crate::counter::{
+        get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo,
+    };
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
     use bitcoin::opcodes::all::OP_RETURN;
     use bitcoin::transaction::Version;
-    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness, WitnessProgram, WScriptHash};
+    use bitcoin::{
+        Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WScriptHash,
+        Witness, WitnessProgram,
+    };
     use bitcoin_scriptexec::{Exec, ExecCtx, Options};
     use bitcoin_simulator::database::Database;
     use bitvm::treepp::*;
     use rand::{Rng, RngCore, SeedableRng};
     use rand_chacha::ChaCha20Rng;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn test_script_execution() {
@@ -525,7 +525,7 @@ mod test {
         prng.fill_bytes(&mut random_txid_preimage);
 
         let prev_counter = 123;
-        let prev_randomness = 45678;
+        let prev_randomizer = 45678;
 
         let prev_witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
             OP_RETURN.to_u8(),
@@ -533,10 +533,10 @@ mod test {
             ((prev_counter >> 8) & 0xff) as u8,
             ((prev_counter >> 16) & 0xff) as u8,
             ((prev_counter >> 24) & 0xff) as u8,
-            (prev_randomness & 0xff) as u8,
-            ((prev_randomness >> 8) & 0xff) as u8,
-            ((prev_randomness >> 16) & 0xff) as u8,
-            ((prev_randomness >> 24) & 0xff) as u8,
+            (prev_randomizer & 0xff) as u8,
+            ((prev_randomizer >> 8) & 0xff) as u8,
+            ((prev_randomizer >> 16) & 0xff) as u8,
+            ((prev_randomizer >> 24) & 0xff) as u8,
         ]));
 
         for input_num in 1..=2 {
@@ -555,7 +555,7 @@ mod test {
                 output: vec![
                     TxOut {
                         value: Amount::from_sat(123456),
-                        script_pubkey: get_taproot(),
+                        script_pubkey: get_script_pub_key_and_control_block().0,
                     },
                     TxOut {
                         value: Amount::ZERO,
@@ -579,9 +579,9 @@ mod test {
                 })
             }
 
-            let information = Information {
+            let information = CounterUpdateInfo {
                 prev_counter,
-                prev_randomizer: prev_randomness,
+                prev_randomizer,
                 prev_balance: prev_tx.output[0].value.to_sat(),
                 prev_txid: prev_tx.compute_txid(),
                 prev_tx_outpoint1: prev_tx.input[0].previous_output.clone(),
@@ -589,7 +589,7 @@ mod test {
                     .input
                     .get(1)
                     .and_then(|x| Some(x.previous_output.clone())),
-                fee_paying_input: None,
+                optional_deposit_input: None,
                 new_balance: 78910,
             };
 
@@ -640,7 +640,7 @@ mod test {
 
         let db = Database::connect_temporary_database().unwrap();
 
-        let script_pub_key = get_taproot();
+        let (script_pub_key, _) = get_script_pub_key_and_control_block();
 
         // create the first tx and accept it unconditionally
         let init_tx = Transaction {
@@ -655,15 +655,26 @@ mod test {
                 sequence: Sequence::default(),
                 witness: Witness::new(),
             }],
-            output: vec![TxOut {
-                value: Amount::from_sat(1_000_000_000),
-                script_pubkey: script_pub_key.clone()
-            }, TxOut {
-                value: Amount::ZERO,
-                script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(
-                    &[OP_RETURN.to_u8(), 0, 0, 0, 0, 12, 0, 0, 0]
-                ))
-            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(1_000_000_000),
+                    script_pubkey: script_pub_key.clone(),
+                },
+                TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(&[
+                        OP_RETURN.to_u8(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        12,
+                        0,
+                        0,
+                        0,
+                    ])),
+                },
+            ],
         };
 
         db.insert_transaction_unconditionally(&init_tx).unwrap();
@@ -672,7 +683,8 @@ mod test {
             OP_TRUE
         };
 
-        let trivial_p2wsh_script_pubkey = ScriptBuf::new_p2wsh(&WScriptHash::hash(trivial_p2wsh_script.as_bytes()));
+        let trivial_p2wsh_script_pubkey =
+            ScriptBuf::new_p2wsh(&WScriptHash::hash(trivial_p2wsh_script.as_bytes()));
 
         let mut trivial_p2wsh_witness = Witness::new();
         trivial_p2wsh_witness.push([]);
@@ -729,21 +741,22 @@ mod test {
             }
             new_balance -= 1; // as for transaction fee
 
-            let information = Information {
+            let information = CounterUpdateInfo {
                 prev_counter,
                 prev_randomizer,
                 prev_balance,
                 prev_txid: prev_txid.clone(),
                 prev_tx_outpoint1: prev_tx_outpoint1.clone(),
                 prev_tx_outpoint2: prev_tx_outpoint2.clone(),
-                fee_paying_input,
+                optional_deposit_input: fee_paying_input,
                 new_balance,
             };
 
             let (tx_template, randomizer) = get_tx(&information);
 
             assert!(db.verify_transaction(&tx_template.tx).is_ok());
-            db.insert_transaction_unconditionally(&tx_template.tx).unwrap();
+            db.insert_transaction_unconditionally(&tx_template.tx)
+                .unwrap();
 
             prev_counter += 1;
             prev_randomizer = randomizer;
@@ -751,7 +764,11 @@ mod test {
             prev_txid = tx_template.tx.compute_txid();
 
             prev_tx_outpoint1 = tx_template.tx.input[0].previous_output;
-            prev_tx_outpoint2 = tx_template.tx.input.get(1).and_then(|x| Some(x.previous_output.clone()));
+            prev_tx_outpoint2 = tx_template
+                .tx
+                .input
+                .get(1)
+                .and_then(|x| Some(x.previous_output.clone()));
         }
     }
 }
