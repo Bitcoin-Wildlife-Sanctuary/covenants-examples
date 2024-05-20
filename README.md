@@ -96,7 +96,7 @@ many corner cases that just need a comprehensive code review, and limitations ne
 
 ### How it works?
 
-The counter example leverages two wizards in the [Bitcoin-Wildlife-Sanctuary/covenants](https://github.com/Bitcoin-Wildlife-Sanctuary/covenants-) 
+The counter example leverages two wizards in the [Bitcoin-Wildlife-Sanctuary/covenants](https://github.com/Bitcoin-Wildlife-Sanctuary/covenants-gadgets/) 
 repository. 
 - One uses the Schnorr trick to reflect on the current transaction. This is the popular [CAT and Schnorr](https://blog.blockstream.com/cat-and-schnorr-tricks-i/) 
 trick from Andrew Poelstra.
