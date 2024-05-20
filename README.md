@@ -62,7 +62,9 @@ Since then, a number of people have been suggesting a formal name for this, and 
 Caboose refers to a railroad car coupled at the **end** of a freight train as a shelter and working space for the crew (see 
 [Wikipedia](https://en.wikipedia.org/wiki/Caboose)). 
 
-![Cat on a caboose](fig/caboose.png)
+<p align="center">
+  <img src="https://github.com/Bitcoin-Wildlife-Sanctuary/covenants-examples/raw/main/fig/caboose.png" />
+</p>
 
 Caboose resonates well with the design because the state-carrying UTXO happens to be the last output, so it is also at the 
 rear of the "freight train"---the transaction. This is, however, a candidate name for now, and it is very possible that 
