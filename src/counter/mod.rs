@@ -2,7 +2,7 @@ use crate::SECP256K1_GENERATOR;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::key::UntweakedPublicKey;
-use bitcoin::opcodes::all::OP_RETURN;
+use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
 use bitcoin::script::scriptint_vec;
 use bitcoin::secp256k1::ThirtyTwoByteHash;
 use bitcoin::sighash::{Prevouts, SighashCache};
@@ -131,6 +131,7 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
         // Generate the corresponding caboose with the new counter.
         let witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
             OP_RETURN.to_u8(),
+            OP_PUSHBYTES_8.to_u8(),
             (new_counter & 0xff) as u8,
             ((new_counter >> 8) & 0xff) as u8,
             ((new_counter >> 16) & 0xff) as u8,
@@ -321,7 +322,7 @@ pub fn get_script() -> Script {
         OP_CAT
 
         // push the script hash header
-        OP_PUSHBYTES_1 OP_RETURN
+        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
 
         // get a hint: the actual counter value in Bitcoin integer format (<=4 bytes)
         OP_DEPTH OP_1SUB OP_ROLL
@@ -474,7 +475,7 @@ pub fn get_script() -> Script {
         OP_CAT2
 
         // push the script hash header
-        OP_PUSHBYTES_1 OP_RETURN
+        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
 
         3 OP_ROLL
 
@@ -508,7 +509,7 @@ mod test {
     };
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
-    use bitcoin::opcodes::all::OP_RETURN;
+    use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
     use bitcoin::transaction::Version;
     use bitcoin::{
         Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WScriptHash,
@@ -534,6 +535,7 @@ mod test {
 
         let prev_witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
             OP_RETURN.to_u8(),
+            OP_PUSHBYTES_8.to_u8(),
             (prev_counter & 0xff) as u8,
             ((prev_counter >> 8) & 0xff) as u8,
             ((prev_counter >> 16) & 0xff) as u8,
@@ -675,6 +677,7 @@ mod test {
                     value: Amount::ZERO,
                     script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(&[
                         OP_RETURN.to_u8(),
+                        OP_PUSHBYTES_8.to_u8(),
                         0,
                         0,
                         0,
