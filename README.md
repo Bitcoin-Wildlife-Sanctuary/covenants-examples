@@ -50,6 +50,8 @@ This technique was discussed in a blog article that L2 Iterative contributed to 
 - https://hackmd.io/@polyhedra/bitcoin
 - https://hackmd.io/@l2iterative/bitcoin-polyhedra
 
+It is also discussed in the [CatVM book](https://catvm.org/catvm.pdf) in Rijndael's jorurnal. 
+
 A more high-level idea, which is to use txid reflection to look up the previous transaction, was used by Rijndael from 
 Taproot Wizards in their implementation of vaults called [purrfect-vault](https://github.com/taproot-wizards/purrfect_vault). 
 This was discussed in [Rijndael's talk](https://x.com/fede_intern/status/1787191430110151060) in Bitcoin++ Austin 2024.
