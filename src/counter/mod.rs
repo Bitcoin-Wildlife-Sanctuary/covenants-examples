@@ -277,9 +277,14 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
 }
 
 pub fn get_script() -> Script {
+    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
+    // the public key.
     let secp256k1_generator = SECP256K1_GENERATOR.clone();
 
     script! {
+        // For more information about the construction of the Tap CheckSigVerify Preimage, please
+        // check out the `covenants` repository.
+
         { tap_csv_preimage::Step1EpochGadget::default() }
         { tap_csv_preimage::Step2HashTypeGadget::from_constant(&TapSighashType::AllPlusAnyoneCanPay) }
         { tap_csv_preimage::Step3VersionGadget::from_constant(&Version::ONE) }
@@ -521,9 +526,9 @@ mod test {
     fn test_script_execution() {
         let mut prng = ChaCha20Rng::seed_from_u64(0);
 
+        // compute a random txid, counter, and randomizer for testing purposes only.
         let mut random_txid_preimage = [0u8; 20];
         prng.fill_bytes(&mut random_txid_preimage);
-
         let prev_counter = 123;
         let prev_randomizer = 45678;
 
@@ -539,6 +544,7 @@ mod test {
             ((prev_randomizer >> 24) & 0xff) as u8,
         ]));
 
+        // Perform the testing with a single input or with two inputs.
         for input_num in 1..=2 {
             let mut prev_tx = Transaction {
                 version: Version::ONE,
@@ -579,7 +585,7 @@ mod test {
                 })
             }
 
-            let information = CounterUpdateInfo {
+            let info = CounterUpdateInfo {
                 prev_counter,
                 prev_randomizer,
                 prev_balance: prev_tx.output[0].value.to_sat(),
@@ -593,9 +599,11 @@ mod test {
                 new_balance: 78910,
             };
 
-            let (tx_template, _) = get_tx(&information);
+            // Construct the transaction.
+            let (tx_template, _) = get_tx(&info);
             let witness = &tx_template.tx.input[0].witness;
 
+            // Simulate the script execution by pre-appending all the initial witness elements.
             let mut script_buf = script! {
                 for entry in witness.iter().take(witness.len() - 2) {
                     { entry.to_vec() }
@@ -607,8 +615,11 @@ mod test {
             if input_num == 1 {
                 println!("counter.len = {} bytes", script_body.len());
             }
+
+            // Copy the full script.
             script_buf.extend_from_slice(script_body.as_bytes());
 
+            // Run the script by emulating its execution environment.
             let script = Script::from_bytes(script_buf);
             let mut exec = Exec::new(
                 ExecCtx::Tapscript,
@@ -642,7 +653,7 @@ mod test {
 
         let (script_pub_key, _) = get_script_pub_key_and_control_block();
 
-        // create the first tx and accept it unconditionally
+        // initialize the counter and accept it unconditionally
         let init_tx = Transaction {
             version: Version::ONE,
             lock_time: LockTime::ZERO,
@@ -668,7 +679,7 @@ mod test {
                         0,
                         0,
                         0,
-                        12,
+                        12, // 12 is for testing purposes.
                         0,
                         0,
                         0,
@@ -677,8 +688,11 @@ mod test {
             ],
         };
 
+        // Ignore whether the TxIn is valid, make the outputs available in the network.
         db.insert_transaction_unconditionally(&init_tx).unwrap();
 
+        // Prepare the trivial script, which is used for testing purposes to deposit more money
+        // into the program.
         let trivial_p2wsh_script = script! {
             OP_TRUE
         };
@@ -690,6 +704,7 @@ mod test {
         trivial_p2wsh_witness.push([]);
         trivial_p2wsh_witness.push(trivial_p2wsh_script);
 
+        // Initialize the state.
         let mut prev_counter = 0u32;
         let mut prev_randomizer = 12u32;
         let mut prev_balance = 1_000_000_000u64;
@@ -699,9 +714,10 @@ mod test {
         let mut prev_tx_outpoint2 = None;
 
         for _ in 0..100 {
-            let has_fee_paying_input = prng.borrow_mut().gen::<bool>();
+            let has_deposit_input = prng.borrow_mut().gen::<bool>();
 
-            let fee_paying_input = if has_fee_paying_input {
+            // If there is a deposit input
+            let deposit_input = if has_deposit_input {
                 let fee_tx = Transaction {
                     version: Version::ONE,
                     lock_time: LockTime::ZERO,
@@ -736,28 +752,31 @@ mod test {
             };
 
             let mut new_balance = prev_balance;
-            if fee_paying_input.is_some() {
+            if deposit_input.is_some() {
                 new_balance += 123_456_000;
             }
             new_balance -= 1; // as for transaction fee
 
-            let information = CounterUpdateInfo {
+            let info = CounterUpdateInfo {
                 prev_counter,
                 prev_randomizer,
                 prev_balance,
                 prev_txid: prev_txid.clone(),
                 prev_tx_outpoint1: prev_tx_outpoint1.clone(),
                 prev_tx_outpoint2: prev_tx_outpoint2.clone(),
-                optional_deposit_input: fee_paying_input,
+                optional_deposit_input: deposit_input,
                 new_balance,
             };
 
-            let (tx_template, randomizer) = get_tx(&information);
+            let (tx_template, randomizer) = get_tx(&info);
 
+            // Check if the new transaction conforms to the requirement.
+            // If so, insert this transaction unconditionally.
             assert!(db.verify_transaction(&tx_template.tx).is_ok());
             db.insert_transaction_unconditionally(&tx_template.tx)
                 .unwrap();
 
+            // Update the local state.
             prev_counter += 1;
             prev_randomizer = randomizer;
             prev_balance = new_balance;
