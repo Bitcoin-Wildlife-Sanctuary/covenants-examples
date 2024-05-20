@@ -1,4 +1,21 @@
 {
   "projectName": "covenants-examples",
-  "projectOwner": "Bitcoin-Wildlife-Sanctuary"
+  "projectOwner": "Bitcoin-Wildlife-Sanctuary",
+  "files": [
+    "README.md"
+  ],
+  "commitType": "docs",
+  "commitConvention": "angular",
+  "contributorsPerLine": 7,
+  "contributors": [
+    {
+      "login": "prasincs",
+      "name": "Prasanna Gautam",
+      "avatar_url": "https://avatars.githubusercontent.com/u/40477?v=4",
+      "profile": "http://nextdoorhacker.com",
+      "contributions": [
+        "code"
+      ]
+    }
+  ]
 }
