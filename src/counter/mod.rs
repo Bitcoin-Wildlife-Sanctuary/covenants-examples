@@ -286,7 +286,7 @@ pub fn get_script() -> Script {
 
     script! {
         // For more information about the construction of the Tap CheckSigVerify Preimage, please
-        // check out the `covenants` repository.
+        // check out the `covenants-gadgets` repository.
 
         { tap_csv_preimage::Step1EpochGadget::default() }
         { tap_csv_preimage::Step2HashTypeGadget::from_constant(&TapSighashType::AllPlusAnyoneCanPay) }
