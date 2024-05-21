@@ -13,7 +13,7 @@ Once it is connected, one can create a new wallet with './bitcoin-cli' and then 
 ./bitcoin-cli --datadir=signet getnewaddress
 ```
 
-### Step 2: connect to a CAT-friendly relay node
+### Step 2: connect to a CAT-ready relay node
 
 Bitcoin client would automatically find a few nearby relay nodes to be used for broadcasting the transaction. However, it is 
 very possible that none of these relay nodes are in the new version that supports OP_CAT, and they may refuse to broadcast it 
