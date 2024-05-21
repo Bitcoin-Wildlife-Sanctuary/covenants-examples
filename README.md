@@ -10,7 +10,7 @@ Specifically, it only supports two operations:
 generates the new program that is carrying the new counter, which increases by 1.
 
 We have experimented this design on Bitcoin signet. See [SIGNET.md](src/counter/SIGNET.md) for a full walkthrough and 
-how to reproduce it.
+how to reproduce it. We want to thank Taproot Wizards for the help with this demo. 
 
 ### Transaction flow
 
