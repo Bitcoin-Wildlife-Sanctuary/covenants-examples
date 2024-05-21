@@ -21,6 +21,8 @@ use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use sha2::Digest;
 use std::str::FromStr;
 
+const DUST_AMOUNT: u64 = 330;
+
 /// Information necessary to create the new transaction.
 pub struct CounterUpdateInfo {
     /// The counter value stored in the previous caboose.
@@ -146,7 +148,7 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
         // If this output doesn't work, in a later step, we will revert the insertion and remove this
         // output from the transaction.
         tx.output.push(TxOut {
-            value: Amount::ZERO,
+            value: Amount::from_sat(DUST_AMOUNT),
             script_pubkey: ScriptBuf::new_witness_program(&witness_program),
         });
 
@@ -316,8 +318,8 @@ pub fn get_script() -> Script {
 
         // second output: the data carrier
 
-        // the balance must be zero
-        OP_PUSHBYTES_8 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0
+        // the balance must be DUST_AMOUNT
+        OP_PUSHBYTES_8 OP_PUSHBYTES_74 OP_PUSHBYTES_1 OP_PUSHBYTES_0 OP_PUSHBYTES_0
         OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0
         OP_CAT
 
@@ -471,7 +473,7 @@ pub fn get_script() -> Script {
         OP_PUSHBYTES_1 OP_PUSHBYTES_34 OP_SWAP
         OP_CAT3
 
-        { tx::step5_output::Step1AmountGadget::from_constant(&Amount::ZERO) }
+        { tx::step5_output::Step1AmountGadget::from_constant(&Amount::from_sat(DUST_AMOUNT)) }
         OP_CAT2
 
         // push the script hash header
@@ -504,9 +506,7 @@ pub fn get_script() -> Script {
 
 #[cfg(test)]
 mod test {
-    use crate::counter::{
-        get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo,
-    };
+    use crate::counter::{get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT};
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
     use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
@@ -566,7 +566,7 @@ mod test {
                         script_pubkey: get_script_pub_key_and_control_block().0,
                     },
                     TxOut {
-                        value: Amount::ZERO,
+                        value: Amount::from_sat(DUST_AMOUNT),
                         script_pubkey: ScriptBuf::new_witness_program(&prev_witness_program),
                     },
                 ],
@@ -674,7 +674,7 @@ mod test {
                     script_pubkey: script_pub_key.clone(),
                 },
                 TxOut {
-                    value: Amount::ZERO,
+                    value: Amount::from_sat(DUST_AMOUNT),
                     script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(&[
                         OP_RETURN.to_u8(),
                         OP_PUSHBYTES_8.to_u8(),
@@ -758,7 +758,8 @@ mod test {
             if deposit_input.is_some() {
                 new_balance += 123_456_000;
             }
-            new_balance -= 1; // as for transaction fee
+            new_balance -= 500; // as for transaction fee
+            new_balance -= DUST_AMOUNT;
 
             let info = CounterUpdateInfo {
                 prev_counter,

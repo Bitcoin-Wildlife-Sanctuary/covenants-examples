@@ -19,6 +19,10 @@ log = "0.4.21"
 [dev-dependencies]
 bitcoin-simulator = { git = "https://github.com/Bitcoin-Wildlife-Sanctuary/bitcoin-simulator"}
 
+[[bin]]
+name = "print_address"
+path = "src/bin/print_address.rs"
+
 [profile.dev]
 opt-level = 3
 
