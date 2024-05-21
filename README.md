@@ -9,6 +9,9 @@ Specifically, it only supports two operations:
 - **Increment the counter by 1:** each transaction can only spend the UTXO that represents the previous program and 
 generates the new program that is carrying the new counter, which increases by 1.
 
+We have experimented this design on Bitcoin signet. See [SIGNET.md](src/counter/SIGNET.md) for a full walkthrough and 
+how to reproduce it.
+
 ### Transaction flow
 
 Each of the transactions in this covenant system has the following layout:
@@ -112,6 +115,10 @@ A portion of the code is contributed by [L2 Iterative (L2IV)](https://www.l2iter
 VC based in San Francisco and Hong Kong. The work receives support from Starkware, who is a limited partner in L2IV. For 
 disclosure, L2IV has also invested into numerous companies active in the Bitcoin ecosystem, but this work is open-source 
 and nonprofit, and is not intended for competition. The code is not investment advice.
+
+Routing a transaction with OP_CAT through the signet before most of the relay nodes are upgraded to the latest version can 
+be difficult. We want to thank Taproot Wizards, particularly Rijndael and Udi, for setting up a relay node that will work 
+to get the transaction included. More information can be found in [SIGNET.md](src/counter/SIGNET.md).
 
 There are also community members contributing to the code and contributing to the ideas. Bitcoin Wildlife Sanctuary is a 
 public-good project supported by many people. 
