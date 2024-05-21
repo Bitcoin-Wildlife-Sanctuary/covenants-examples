@@ -86,8 +86,9 @@ This is not a hard limitation. Indeed, there are many ways to fix this "bug" whi
 current implementation as it is since it is the most general-purpose and educational format. 
 - Limit the amount of fees payable to the miner. This can be done by hardcoding a limit in the code and enforcing this limit.
 - Rely purely on the deposit input to pay for the fee. This can be done by requiring the program, similar to 
-the caboose, to have a balance of zero, but the deposit input would only be able to be spent "as a whole". A more fine-grained 
-design would enable refunding the remainder back to the deposit input's owner (aka the signature public key).
+the caboose, to have a small balance (aka, the dust amount, as a balance of zero tends to be rejected) , but the deposit 
+input would only be able to be spent "as a whole". A more fine-grained design would enable refunding the remainder back 
+to the deposit input's owner (aka the signature public key).
 - Keep only a small amount of sats in the program.
 
 Another limitation is that the counter will no longer work if it exceeds the maximum of a signed 32-bit integer in Bitcoin 
