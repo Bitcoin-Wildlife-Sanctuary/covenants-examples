@@ -50,4 +50,4 @@ git = "https://github.com/rust-bitcoin/rust-bitcoin"
 branch = "bitvm"
 
 [patch.'https://github.com/BitVM/rust-bitcoin-scriptexec'.bitcoin-scriptexec]
-git = "https://github.com/weikengchen/rust-bitcoin-scriptexec"
+git = "https://github.com/Bitcoin-Wildlife-Sanctuary/rust-bitcoin-scriptexec"
