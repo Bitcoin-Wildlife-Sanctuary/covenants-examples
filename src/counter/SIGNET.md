@@ -36,7 +36,7 @@ addnode=inquisition.taprootwizards.com
 The inquisition 27.0 [announcement](https://delvingbitcoin.org/t/bitcoin-inquisition-27-0/883) mentioned an official public inquisition node that is set up by Anthony Towns 
 and will support OP_CAT and other signet soft fork gap period issues. However, we suggest to use Taproot Wizards's relay 
 node to relieve the official node from other P2P requests that are not relevant to transaction submission---for example, 
-synchronizing with the chain. 
+synchronizing with the chain---because we would be in more trouble if the signet block signer is down. 
 
 ### Step 3: obtain Bitcoin Signet sats for testing
 
