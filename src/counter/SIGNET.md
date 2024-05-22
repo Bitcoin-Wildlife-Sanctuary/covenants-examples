@@ -30,7 +30,7 @@ signet=1
 daemon=1
 
 [signet]
-addnode=[---TBD, will be added soon---]
+addnode=inquisition.taprootwizards.com
 ```
 
 The inquisition 27.0 [announcement](https://delvingbitcoin.org/t/bitcoin-inquisition-27-0/883) mentioned an official public inquisition node that is set up by Anthony Towns 
