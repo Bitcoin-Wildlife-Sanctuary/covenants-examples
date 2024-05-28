@@ -523,6 +523,7 @@ mod test {
     use std::cell::RefCell;
     use std::rc::Rc;
     use bitcoin::consensus::{Decodable, Encodable};
+    use bitcoin_simulator::policy::Policy;
 
     #[test]
     fn test_script_execution() {
@@ -798,6 +799,8 @@ mod test {
 
     #[test]
     fn test_consistency() {
+        let policy = Policy::default().set_fee(1).set_max_tx_weight(400000);
+
         let tx1_data = "020000000001019acf43ed7f5a246ddd41594089c4a0f157b443512ea5844a243852257d05f5710000000000fdffffff028813000000000000160014f11c424c8130fa440d4a0302e6a06c0e6d741ab205d10e00000000001600147ec82fa13b7ba313b4cc4ea67812e9c11f4f960902473044022012fc1f00b48b14143fa8779e15859a88a4e67f25b4b1d960bee8fd2edade483802203c21c771793677fc1e4439857b1dd40cfea6870dba60c8c49a465b97e3ce6045012103cd33798d7aa483b259f3ba8996a65f62c04a39b15c4b3d0234674fe82dd240aeafff0200";
         let tx2_data = "01000000000101d4b0610c3363351b60993bc76d12fbb4afa68a132483c496444f1827053192750000000000ffffffff02941100000000000022512022d49e6696cb33db2d6b5d8c44b4dfd0c7e5c701bb8d4d23d9e81eca928310f14a010000000000002200202775ad76ba4cd805e2b41b9ef18c644904debd8fb19dbb50e7db061f85e2d5dd024730440220226e2b0c70c5c8895a29ced195c930631fcc3f8a398e2cdd860c5e43fdd71e7902202be9c113b6729eef19254906ea014fdbe9c522188afd3f87cb0cf8ec8196d7d801210385cabf57efd22267de723e80aac89c06136b058648ee5d4225746c695bc829d500000000";
 
@@ -815,6 +818,7 @@ mod test {
         db.insert_transaction_unconditionally(&tx1).unwrap();
 
         assert!(db.verify_transaction(&tx2).is_ok());
+        db.check_fees(&tx2, &policy).unwrap();
         db.insert_transaction_unconditionally(&tx2).unwrap();
 
         let mut txid = [0u8; 32];
@@ -856,6 +860,7 @@ mod test {
         println!("tx length: {}", bytes.len());
 
         db.verify_transaction(&tx).unwrap();
+        db.check_fees(&tx, &policy).unwrap();
         db.insert_transaction_unconditionally(&tx).unwrap();
     }
 }
