@@ -1,10 +1,9 @@
+use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::key::UntweakedPublicKey;
 use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
-use bitcoin::script::scriptint_vec;
-use bitcoin::secp256k1::ThirtyTwoByteHash;
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{LeafVersion, TaprootBuilder};
 use bitcoin::transaction::Version;
@@ -12,8 +11,8 @@ use bitcoin::{
     Amount, OutPoint, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut,
     Txid, Witness, WitnessProgram,
 };
+use bitcoin_scriptexec::utils::scriptint_vec;
 use bitcoin_scriptexec::TxTemplate;
-use bitvm::treepp::*;
 use covenants_gadgets::internal_structures::cpp_int_32::CppInt32Gadget;
 use covenants_gadgets::structures::tagged_hash::{get_hashed_tag, HashTag, TaggedHashGadget};
 use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
@@ -156,21 +155,23 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
         let mut sighashcache = SighashCache::new(tx.clone());
 
         // Compute the taproot hash assuming AllPlusAnyoneCanPay.
-        let hash = sighashcache
-            .taproot_script_spend_signature_hash(
-                0,
-                &Prevouts::One(
+        let hash = AsRef::<[u8]>::as_ref(
+            &sighashcache
+                .taproot_script_spend_signature_hash(
                     0,
-                    &TxOut {
-                        value: Amount::from_sat(info.prev_balance),
-                        script_pubkey: script_pub_key.clone(),
-                    },
-                ),
-                tap_leaf_hash,
-                TapSighashType::AllPlusAnyoneCanPay,
-            )
-            .unwrap()
-            .into_32();
+                    &Prevouts::One(
+                        0,
+                        &TxOut {
+                            value: Amount::from_sat(info.prev_balance),
+                            script_pubkey: script_pub_key.clone(),
+                        },
+                    ),
+                    tap_leaf_hash,
+                    TapSighashType::AllPlusAnyoneCanPay,
+                )
+                .unwrap(),
+        )
+        .to_vec();
 
         // Compute the tagged hash of the signature preimage.
         let bip340challenge_prefix = get_hashed_tag("BIP0340/challenge");
@@ -506,9 +507,13 @@ pub fn get_script() -> Script {
 
 #[cfg(test)]
 mod test {
-    use crate::counter::{get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT};
+    use crate::counter::{
+        get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT,
+    };
+    use crate::treepp::*;
     use bitcoin::absolute::LockTime;
-    use bitcoin::hashes::{Hash, sha256d};
+    use bitcoin::consensus::{Decodable, Encodable};
+    use bitcoin::hashes::{sha256d, Hash};
     use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
     use bitcoin::transaction::Version;
     use bitcoin::{
@@ -517,13 +522,11 @@ mod test {
     };
     use bitcoin_scriptexec::{Exec, ExecCtx, Options};
     use bitcoin_simulator::database::Database;
-    use bitvm::treepp::*;
+    use bitcoin_simulator::policy::Policy;
     use rand::{Rng, RngCore, SeedableRng};
     use rand_chacha::ChaCha20Rng;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use bitcoin::consensus::{Decodable, Encodable};
-    use bitcoin_simulator::policy::Policy;
 
     #[test]
     fn test_script_execution() {
@@ -822,11 +825,17 @@ mod test {
         db.insert_transaction_unconditionally(&tx2).unwrap();
 
         let mut txid = [0u8; 32];
-        txid.copy_from_slice(&hex::decode("68e2d729431eae48ff8deda8b2437b80dfba1973d834ef25a7c9e84dcb772231").unwrap());
+        txid.copy_from_slice(
+            &hex::decode("68e2d729431eae48ff8deda8b2437b80dfba1973d834ef25a7c9e84dcb772231")
+                .unwrap(),
+        );
         txid.reverse();
 
         let mut prev_txid = [0u8; 32];
-        prev_txid.copy_from_slice(&hex::decode("7592310527184f4496c48324138aa6afb4fb126dc73b99601b3563330c61b0d4").unwrap());
+        prev_txid.copy_from_slice(
+            &hex::decode("7592310527184f4496c48324138aa6afb4fb126dc73b99601b3563330c61b0d4")
+                .unwrap(),
+        );
         prev_txid.reverse();
 
         let prev_counter = 0;
