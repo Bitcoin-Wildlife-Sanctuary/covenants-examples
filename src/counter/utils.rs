@@ -56,20 +56,23 @@ pub fn step2() -> Script {
 }
 
 /// stack input:
-///     [new_counter,..., pubkey, balance|34|pubkey|dust, header]
+///     [new_counter, prev_counter,..., pubkey, balance|34|pubkey|dust, header]
 ///
 /// stack output:
 //      [..., pubkey, prev_counter, balance|34|pubkey|dust, header | new_counter]
 pub fn counter_ops() -> Script {
     script! {
-        // check new_counter
+        // check new_counter, and save to altstack
         OP_DEPTH OP_1SUB OP_ROLL
-        OP_1ADD OP_1SUB
         OP_DUP 0 OP_GREATERTHAN OP_VERIFY
+        OP_DUP OP_TOALTSTACK
 
-        OP_DUP OP_1SUB OP_TOALTSTACK
+        // check prev_counter, and save to altstack
+        OP_DEPTH OP_1SUB OP_ROLL
+        OP_DUP 0 OP_GREATERTHAN OP_VERIFY
+        OP_DUP OP_TOALTSTACK OP_TOALTSTACK
         { CppInt32Gadget::from_positive_bitcoin_integer() }
-        //  [..., pubkey, balance|34|pubkey|dust, header, new_counter] | [prev_counter]
+        //  [..., pubkey, balance|34|pubkey|dust, header, new_counter] | [new_counter, prev_counter, prev_counter]
 
         OP_CAT2 OP_FROMALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK
         //  [..., pubkey, prev_counter, balance|34|pubkey|dust, header | new_counter]

@@ -214,8 +214,11 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     // this script's scriptpubkey (34 bytes)
     script_execution_witness.push(script_pub_key.to_bytes());
 
-    // the actual number (as a Bitcoin integer)
+    // the current counter (as a Bitcoin integer)
     script_execution_witness.push(scriptint_vec(new_counter as i64));
+
+    // the prev_counter (as a Bitcoin integer)
+    script_execution_witness.push(scriptint_vec(info.prev_counter as i64));
 
     // the randomizer (4 bytes)
     script_execution_witness.push(randomizer.to_le_bytes().to_vec());
@@ -359,8 +362,10 @@ pub fn get_script_new() -> Script {
 
         OP_SHA256
         //  [..., prev_txid, Hash(Hash(txid_preimage | prev_balance | 34 | script_pubkey | DUMS_AMOUNT | 34_0_32 | Hash(header | rev_counter | ranomdizer) | 0))]
+        OP_EQUALVERIFY
 
-        OP_EQUAL
+        OP_FROMALTSTACK OP_FROMALTSTACK
+        OP_1SUB OP_EQUAL
     }
 }
 
