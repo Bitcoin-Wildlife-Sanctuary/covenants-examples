@@ -64,7 +64,7 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
     );
 
     // let script = get_script();
-    let script = get_script_new();
+    let script = get_script_counter_plus_one();
 
     let taproot_builder = TaprootBuilder::new().add_leaf(0, script.clone()).unwrap();
     let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
@@ -91,7 +91,7 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
     let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
     // let script = get_script();
-    let script = get_script_new();
+    let script = get_script_counter_plus_one();
     let tap_leaf_hash = TapLeafHash::from_script(
         &ScriptBuf::from_bytes(script.to_bytes()),
         LeafVersion::TapScript,
@@ -289,7 +289,7 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     (tx_template, randomizer)
 }
 
-pub fn get_script_new() -> Script {
+pub fn get_script_counter_plus_one() -> Script {
     script! {
         { utils::convenant(DUST_AMOUNT) }
 
@@ -526,7 +526,7 @@ pub fn get_script() -> Script {
 #[cfg(test)]
 mod test {
     use crate::counter::{
-        get_script, get_script_new, get_script_pub_key_and_control_block, get_tx,
+        get_script, get_script_counter_plus_one, get_script_pub_key_and_control_block, get_tx,
         CounterUpdateInfo, DUST_AMOUNT,
     };
     use crate::treepp::*;
@@ -637,7 +637,7 @@ mod test {
             }
             .to_bytes();
             // let script_body = get_script();
-            let script_body = get_script_new();
+            let script_body = get_script_counter_plus_one();
 
             if input_num == 1 {
                 println!("counter.len = {} bytes", script_body.len());
