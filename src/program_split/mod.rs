@@ -81,3 +81,100 @@ pub fn tap_tree_builder(num_scripts: usize) {
         assert!(ctrl_block.verify_taproot_commitment(&secp, output_key.to_inner(), &ver_script.0))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::treepp::*;
+    // use bitcoin::hex_conservative::FromHex;
+    use bitcoin::opcodes::all::{OP_PUSHBYTES_34, OP_PUSHBYTES_8};
+    use bitcoin_scriptexec::execute_script;
+    use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
+    use hex::FromHex;
+
+    #[test]
+    fn test_counter_script() {
+        // let counter = Vec::from_hex("1234").expect("Decode balance faield");
+        // let balance = Vec::from_hex("12345678").expect("Decode balance faield");
+        let balance = 10000_u32;
+        let pubkey_hex = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12";
+        let pubkey = Vec::from_hex(pubkey_hex).expect("Decoding pubkey failed");
+        let counter = 123_u32;
+        let randomizer = 111_u32;
+        let unknown1 = 678_u32;
+        let txid = 300_u32;
+
+        let script = script! {
+            { balance }
+            { pubkey }
+            { counter }
+            { randomizer }
+            { unknown1 }
+            { txid }
+            // [balance, pubkey, counter, randomizer, unknown1, txid]
+
+            OP_DEPTH OP_1SUB OP_ROLL
+            OP_DEPTH OP_1SUB OP_ROLL
+            // [counter, randomizer, unknown1, txid, balance, pubkey]
+
+            // step 1:
+            OP_DUP OP_TOALTSTACK
+            OP_PUSHBYTES_1 OP_PUSHBYTES_34
+            OP_SWAP OP_CAT3
+            OP_FROMALTSTACK OP_SWAP
+            // [counter, randomizer, unknown1, txid, pubkey, balance_0x22_pubkey]
+
+            // step 2:
+            // dust amount of balance
+            OP_PUSHBYTES_8 OP_PUSHBYTES_74 OP_PUSHBYTES_1 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0
+            OP_CAT
+            // [counter, randomizer, unknown1, txid, pubkey, balance_0x22_pubkey_dust]
+
+            // step 3:
+            // script hash header
+            OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
+            // [counter, randomizer, unknown1, txid, pubkey, balance_0x22_pubkey_dust, header]
+
+            // step 4:
+            OP_DEPTH OP_1SUB OP_ROLL
+            // OP_1ADD OP_1SUB
+            OP_DUP 0 OP_GREATERTHAN OP_VERIFY
+            // [randomizer, unknown1, txid, pubkey, balance_0x22_pubkey_dust, header, counter]
+            OP_DUP OP_1SUB OP_TOALTSTACK
+            // [randomizer, unknown1, txid, pubkey, balance_0x22_pubkey_dust, header, counter | counter]
+
+            // step 5:
+            OP_DEPTH OP_1SUB OP_ROLL
+            // OP_SIZE 4 OP_EQUALVERIFY
+            OP_CAT3
+            // [unknown1, txid, pubkey, balance_0x22_pubkey_dust, header_counter_randomizer | counter]
+            OP_SHA256
+            // [unknown1, txid, pubkey, balance_0x22_pubkey_dust, Hash(header_counter_randomizer) | counter]
+
+            // step 6: push unknown X
+            OP_PUSHBYTES_3 OP_PUSHBYTES_34 OP_PUSHBYTES_0 OP_PUSHBYTES_32
+            OP_SWAP OP_CAT3
+            // [unknown1, txid, pubkey, balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer) | counter]
+            OP_SHA256
+            // [unknown1, txid, pubkey, Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer)) | counter]
+
+            // step 7:
+            OP_ROT OP_SWAP OP_CAT2
+            // [txid, pubkey, unknown1_Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer)) | counter]
+            OP_FROMALTSTACK OP_SWAP
+            // [txid, pubkey, counter, unknown1_Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer))]
+            { 2 } OP_CAT
+            // [txid, pubkey, counter, unknown1_Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer))_2]
+
+            // step 8:
+            OP_DEPTH OP_1SUB OP_ROLL
+            OP_DUP OP_TOALTSTACK
+            // [pubkey, counter, unknown1_Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer))_2, txid | txid]
+            { 0 } OP_CAT3
+            // [pubkey, counter, unknown1_Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer))_2_txid_0 | txid]
+
+            // [pubkey, counter, unknown1_Hash(balance_0x22_pubkey_dust_X_Hash(header_counter_randomizer))_2_txid_0_amount | txid, amount]
+        };
+        let exec_result = execute_script(script);
+        println!("{}", exec_result);
+    }
+}

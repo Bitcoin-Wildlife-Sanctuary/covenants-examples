@@ -1,3 +1,5 @@
+mod utils;
+
 use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
 use bitcoin::absolute::LockTime;
@@ -19,6 +21,8 @@ use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use sha2::Digest;
 use std::str::FromStr;
+
+use crate::counter::utils::*;
 
 const DUST_AMOUNT: u64 = 330;
 
@@ -59,7 +63,8 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
         .unwrap(),
     );
 
-    let script = get_script();
+    // let script = get_script();
+    let script = get_script_new();
 
     let taproot_builder = TaprootBuilder::new().add_leaf(0, script.clone()).unwrap();
     let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
@@ -85,7 +90,8 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
 pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
     let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
-    let script = get_script();
+    // let script = get_script();
+    let script = get_script_new();
     let tap_leaf_hash = TapLeafHash::from_script(
         &ScriptBuf::from_bytes(script.to_bytes()),
         LeafVersion::TapScript,
@@ -278,6 +284,84 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     };
 
     (tx_template, randomizer)
+}
+
+pub fn get_script_new() -> Script {
+    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
+    // the public key.
+    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+    script! {
+        // csv_preimage
+        step1
+        // [..., csv_preimage]
+
+        // new_balance| 34 | pubkey | DUST_AMOUNT
+        step2
+        // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
+
+        // script hash header
+        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
+        // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT, header]
+
+        // counter ops
+        counter_ops
+        //  [..., csv_preimage, pubkey, prev_counter, balance | 34 | pubkey | dust, header | new_counter]
+
+        // pull ranomdizer
+        OP_DEPTH OP_1SUB OP_ROLL
+        OP_SIZE 4 OP_EQUALVERIFY
+        OP_CAT OP_SHA256
+        //  [..., csv_preimage, pubkey, prev_counter, balance | 34 | pubkey | dust, Hash(header | new_counter | randomizer)]
+
+        seperator1
+        //  [..., csv_preimage, pubkey, prev_counter, balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)]
+
+        OP_SHA256 OP_TOALTSTACK OP_ROT OP_FROMALTSTACK
+        { tap_csv_preimage::Step7SpendTypeGadget::from_constant(1, false) }
+        OP_CAT3
+        //  [..., pubkey, prev_counter, csv_preimage | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)) | 2]
+
+        step3
+        //  [..., pubkey, prev_counter, prev_balance, prev_txid, csv_preimage | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)) | 2 | prev_txid | 0 | prev_balance | 34 | pubkey | serial]
+
+        step4
+        //  [..., pubkey, prev_counter, prev_balance, prev_txid, csv_preimage | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)) | 2 | prev_txid | 0 | prev_balance | 34 | pubkey | serial | tap_leaf_hash | 0 | 0xffffffff]
+
+        { TaggedHashGadget::from_provided(&HashTag::TapSighash) }
+
+        { secp256k1_generator.clone() }
+        OP_DUP OP_TOALTSTACK
+        OP_DUP OP_TOALTSTACK
+
+        OP_DUP OP_ROT OP_CAT3
+
+        { TaggedHashGadget::from_provided(&HashTag::BIP340Challenge) }
+
+        step5
+        //  [..., pubkey, prev_counter, prev_balance, prev_txid]
+
+        step6
+        //  [..., pubkey, prev_counter, prev_balance, prev_txid, txid_preimage]
+
+        { utils::step7(DUST_AMOUNT) }
+        //  [..., prev_txid, txid_preimage | prev_balance | 34 | script_pubkey | DUMS_AMOUNT, header, prev_counter]
+
+        step8
+        //  [..., prev_txid, txid_preimage | prev_balance | 34 | script_pubkey | DUMS_AMOUNT, Hash(header | rev_counter | ranomdizer)]
+
+        seperator1
+        //  [..., prev_txid, txid_preimage | prev_balance | 34 | script_pubkey | DUMS_AMOUNT | 34_0_32 | Hash(header | rev_counter | ranomdizer)]
+
+        { tx::Step6LockTimeGadget::from_constant_absolute(&LockTime::ZERO) }
+        OP_CAT2
+        OP_SHA256
+        //  [..., prev_txid, Hash(txid_preimage | prev_balance | 34 | script_pubkey | DUMS_AMOUNT | 34_0_32 | Hash(header | rev_counter | ranomdizer) | 0)]
+
+        OP_SHA256
+        //  [..., prev_txid, Hash(Hash(txid_preimage | prev_balance | 34 | script_pubkey | DUMS_AMOUNT | 34_0_32 | Hash(header | rev_counter | ranomdizer) | 0))]
+
+        OP_EQUAL
+    }
 }
 
 pub fn get_script() -> Script {
@@ -508,7 +592,8 @@ pub fn get_script() -> Script {
 #[cfg(test)]
 mod test {
     use crate::counter::{
-        get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT,
+        get_script, get_script_new, get_script_pub_key_and_control_block, get_tx,
+        CounterUpdateInfo, DUST_AMOUNT,
     };
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
@@ -617,7 +702,8 @@ mod test {
                 }
             }
             .to_bytes();
-            let script_body = get_script();
+            // let script_body = get_script();
+            let script_body = get_script_new();
 
             if input_num == 1 {
                 println!("counter.len = {} bytes", script_body.len());
