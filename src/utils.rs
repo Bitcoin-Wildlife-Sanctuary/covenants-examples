@@ -2,12 +2,9 @@ use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
 use bitcoin::absolute::LockTime;
 use bitcoin::transaction::Version;
-use bitcoin::{
-    Amount, OutPoint, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut,
-    Txid, Witness, WitnessProgram,
-};
+use bitcoin::{Amount, Sequence, TapSighashType};
 use covenants_gadgets::internal_structures::cpp_int_32::CppInt32Gadget;
-use covenants_gadgets::structures::tagged_hash::{get_hashed_tag, HashTag, TaggedHashGadget};
+use covenants_gadgets::structures::tagged_hash::{HashTag, TaggedHashGadget};
 use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 

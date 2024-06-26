@@ -7,6 +7,7 @@ pub static SECP256K1_GENERATOR: Lazy<Vec<u8>> = Lazy::new(|| {
 
 pub mod counter;
 pub mod program_split;
+pub mod utils;
 
 pub(crate) mod treepp {
     pub use bitcoin_script::{define_pushable, script};

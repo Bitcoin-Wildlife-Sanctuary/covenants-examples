@@ -1,7 +1,5 @@
-mod script_taptree;
-mod utils;
-
 use crate::treepp::*;
+use crate::utils;
 use crate::SECP256K1_GENERATOR;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::Encodable;
@@ -22,8 +20,6 @@ use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use sha2::Digest;
 use std::str::FromStr;
-
-use crate::counter::utils::*;
 
 const DUST_AMOUNT: u64 = 330;
 
@@ -301,22 +297,11 @@ pub fn get_script_counter_plus_one() -> Script {
     }
 }
 
-/// toy script of plus n on counter
-pub fn get_script_counter_plus_n(n: u32) -> Script {
-    script! {
-        { utils::convenant(DUST_AMOUNT) }
-
-        OP_FROMALTSTACK OP_FROMALTSTACK
-        // [prev_counter, new_counter]
-        { n } OP_SUB OP_EQUAL
-    }
-}
-
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::counter::{
-        get_script_counter_plus_one, get_script_pub_key_and_control_block, get_tx,
-        CounterUpdateInfo, DUST_AMOUNT,
+        get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT,
     };
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
@@ -425,7 +410,6 @@ mod test {
                 }
             }
             .to_bytes();
-            // let script_body = get_script();
             let script_body = get_script_counter_plus_one();
 
             if input_num == 1 {

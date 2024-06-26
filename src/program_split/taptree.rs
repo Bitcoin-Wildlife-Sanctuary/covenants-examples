@@ -2,19 +2,17 @@ use bitcoin::key::UntweakedPublicKey;
 use bitcoin::taproot::LeafVersion;
 use bitcoin::taproot::TaprootBuilder;
 use bitcoin::taproot::TaprootSpendInfo;
-use bitcoin::{
-    Amount, OutPoint, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut,
-    Txid, Witness, WitnessProgram,
-};
+use bitcoin::{ScriptBuf, TapLeafHash, WitnessProgram};
 use std::str::FromStr;
 
+#[derive(Clone)]
 pub struct ScriptTapTree {
     spend_info: TaprootSpendInfo,
     pubkey: ScriptBuf,
 }
 
 impl ScriptTapTree {
-    pub fn new(scripts: Vec<ScriptBuf>) -> Self {
+    pub fn new(scripts: &Vec<ScriptBuf>) -> Self {
         let num_scripts = scripts.len();
         let log2 = (num_scripts as u32).ilog2() as u8;
         let prev_power_of_2 = 2_usize.pow(log2 as u32);
@@ -66,17 +64,22 @@ impl ScriptTapTree {
         }
     }
 
-    pub fn get_pub_key(self) -> ScriptBuf {
-        self.pubkey
+    pub fn get_pub_key(&self) -> ScriptBuf {
+        self.clone().pubkey
     }
 
-    pub fn get_control_block(self, script: ScriptBuf) -> Vec<u8> {
+    pub fn get_control_block(&self, script: &ScriptBuf) -> Vec<u8> {
         let mut control_block_bytes = Vec::new();
-        self.spend_info
-            .control_block(&(script, LeafVersion::TapScript))
+        self.clone()
+            .spend_info
+            .control_block(&(script.clone(), LeafVersion::TapScript))
             .unwrap()
             .encode(&mut control_block_bytes)
             .unwrap();
         control_block_bytes
+    }
+
+    pub fn get_tap_leaf(script: &ScriptBuf) -> TapLeafHash {
+        TapLeafHash::from_script(script, LeafVersion::TapScript)
     }
 }
