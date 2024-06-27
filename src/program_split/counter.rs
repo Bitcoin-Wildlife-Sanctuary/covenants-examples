@@ -42,7 +42,7 @@ impl CounterUpdateInfo {
             prev_tx_outpoint1: OutPoint::new(txid, 0_u32),
             prev_tx_outpoint2: None,
             optional_deposit_input: None,
-            new_balance: 0_64,
+            new_balance: 0_u64,
         }
     }
 }
@@ -62,10 +62,10 @@ pub fn get_script_counter_plus_n(n: u32) -> Script {
 mod test {
     use super::super::{taptree, transaction};
     use super::*;
-    use bitcoin::hashes::{sha256d, Hash};
+    use bitcoin::hashes::Hash;
     use bitcoin::{ScriptBuf, Sequence, Witness};
     use bitcoin_scriptexec::{Exec, ExecCtx, Options};
-    use rand::{Rng, RngCore, SeedableRng};
+    use rand::{RngCore, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     #[test]

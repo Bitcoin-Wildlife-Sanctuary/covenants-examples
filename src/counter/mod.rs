@@ -14,10 +14,7 @@ use bitcoin::{
 };
 use bitcoin_scriptexec::utils::scriptint_vec;
 use bitcoin_scriptexec::TxTemplate;
-use covenants_gadgets::internal_structures::cpp_int_32::CppInt32Gadget;
-use covenants_gadgets::structures::tagged_hash::{get_hashed_tag, HashTag, TaggedHashGadget};
-use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
-use covenants_gadgets::wizards::{tap_csv_preimage, tx};
+use covenants_gadgets::structures::tagged_hash::{get_hashed_tag};
 use sha2::Digest;
 use std::str::FromStr;
 
@@ -303,7 +300,7 @@ mod test {
     use crate::counter::{
         get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT,
     };
-    use crate::treepp::*;
+    
     use bitcoin::absolute::LockTime;
     use bitcoin::consensus::{Decodable, Encodable};
     use bitcoin::hashes::{sha256d, Hash};
