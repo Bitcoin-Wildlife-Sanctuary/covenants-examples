@@ -14,7 +14,7 @@ use bitcoin::{
 };
 use bitcoin_scriptexec::utils::scriptint_vec;
 use bitcoin_scriptexec::TxTemplate;
-use covenants_gadgets::structures::tagged_hash::{get_hashed_tag};
+use covenants_gadgets::structures::tagged_hash::get_hashed_tag;
 use sha2::Digest;
 use std::str::FromStr;
 
@@ -58,7 +58,7 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
     );
 
     // let script = get_script();
-    let script = get_script_counter_plus_one();
+    let script = get_script_counter_plus_n(1);
 
     let taproot_builder = TaprootBuilder::new().add_leaf(0, script.clone()).unwrap();
     let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
@@ -85,7 +85,7 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
     let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
     // let script = get_script();
-    let script = get_script_counter_plus_one();
+    let script = get_script_counter_plus_n(1);
     let tap_leaf_hash = TapLeafHash::from_script(
         &ScriptBuf::from_bytes(script.to_bytes()),
         LeafVersion::TapScript,
@@ -283,14 +283,14 @@ pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
     (tx_template, randomizer)
 }
 
-/// toy script of plus one on counter
-pub fn get_script_counter_plus_one() -> Script {
+/// toy script of plus n on counter
+pub fn get_script_counter_plus_n(n: u32) -> Script {
     script! {
         { utils::convenant(DUST_AMOUNT) }
 
         OP_FROMALTSTACK OP_FROMALTSTACK
         // [prev_counter, new_counter]
-        OP_1SUB OP_EQUAL
+        { n } OP_SUB OP_EQUAL
     }
 }
 
@@ -300,7 +300,7 @@ mod test {
     use crate::counter::{
         get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT,
     };
-    
+
     use bitcoin::absolute::LockTime;
     use bitcoin::consensus::{Decodable, Encodable};
     use bitcoin::hashes::{sha256d, Hash};
@@ -407,7 +407,7 @@ mod test {
                 }
             }
             .to_bytes();
-            let script_body = get_script_counter_plus_one();
+            let script_body = get_script_counter_plus_n(1);
 
             if input_num == 1 {
                 println!("counter.len = {} bytes", script_body.len());

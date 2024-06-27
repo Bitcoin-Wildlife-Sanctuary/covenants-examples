@@ -82,7 +82,7 @@ impl CounterTransaction {
         tx: &mut Transaction,
         pubkey: ScriptBuf,
         leaf_hash: &TapLeafHash,
-        new_balance: u64,
+        prev_balance: u64,
         new_counter: u32,
     ) -> (Vec<u8>, u32) {
         let mut randomizer = 0_u32;
@@ -90,7 +90,7 @@ impl CounterTransaction {
         let prevout = Prevouts::One(
             0,
             TxOut {
-                value: Amount::from_sat(new_balance),
+                value: Amount::from_sat(prev_balance),
                 script_pubkey: pubkey.clone(),
             },
         );
@@ -182,7 +182,7 @@ impl CounterTransaction {
             &mut tx,
             pubkey.clone(),
             &leaf_hash,
-            public_info.new_balance,
+            public_info.prev_balance,
             new_counter,
         );
 
@@ -260,22 +260,9 @@ impl CounterTransaction {
         // Include the witness in the TxIn.
         tx.input[0].witness = script_tx_witness;
 
-        // update public info
-        public_info.prev_balance = public_info.new_balance;
-        public_info.new_balance -= tx_fee;
-        public_info.prev_counter = new_counter;
-        public_info.prev_randomizer = randomizer;
-        public_info.prev_txid = tx.compute_txid();
-        public_info.prev_tx_outpoint1 = tx.input[0].previous_output.clone();
-        public_info.prev_tx_outpoint2 = tx
-            .input
-            .get(1)
-            .and_then(|x| Some(x.previous_output.clone()));
-        public_info.optional_deposit_input = None;
-
         // Prepare the TxTemplate.
         let tx_template = TxTemplate {
-            tx,
+            tx: tx.clone(),
             prevouts: vec![TxOut {
                 value: Amount::from_sat(public_info.prev_balance),
                 script_pubkey: pubkey.clone(),
@@ -283,6 +270,19 @@ impl CounterTransaction {
             input_idx: 0,
             taproot_annex_scriptleaf: Some((leaf_hash.clone(), None)),
         };
+
+        // update public info
+        public_info.prev_txid = tx.compute_txid();
+        public_info.prev_balance = public_info.new_balance;
+        public_info.new_balance -= tx_fee;
+        public_info.prev_counter = new_counter;
+        public_info.prev_randomizer = randomizer;
+        public_info.prev_tx_outpoint1 = tx.input[0].previous_output.clone();
+        public_info.prev_tx_outpoint2 = tx
+            .input
+            .get(1)
+            .and_then(|x| Some(x.previous_output.clone()));
+        public_info.optional_deposit_input = None;
 
         CounterTransaction(tx_template)
     }

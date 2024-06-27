@@ -70,7 +70,7 @@ mod test {
 
     #[test]
     fn test_multi_script_execution() {
-        let num_scripts = 1_usize;
+        let num_scripts = 10_usize;
         let tx_fee = 10;
         let mut prng = ChaCha20Rng::seed_from_u64(0);
 
@@ -122,6 +122,7 @@ mod test {
                 .and_then(|x| Some(x.previous_output.clone())),
             optional_deposit_input: None,
             new_balance: init_balance - tx_fee,
+            // new_balance: 78910,
         };
 
         // execute every transaction

@@ -29,30 +29,37 @@ impl ScriptTapTree {
         // add the individual scripts into Taptree (as leaf node)
         // push the first prev_power_of_2 leaf nodes
         let mut taproot_builder = TaprootBuilder::new();
-        for i in 0..prev_power_of_2 {
+        if prev_power_of_2 == 1 {
+            taproot_builder = taproot_builder.add_leaf(0, scripts[0].clone()).unwrap();
+        } else if prev_power_of_2 == num_scripts {
+            for i in 0..prev_power_of_2 {
+                taproot_builder = taproot_builder.add_leaf(log2, scripts[i].clone()).unwrap();
+            }
+        } else {
+            // push the previouse power of 2
+            for i in 0..prev_power_of_2 {
+                taproot_builder = taproot_builder
+                    .add_leaf(log2 + 1, scripts[i].clone())
+                    .unwrap();
+            }
+            // push the remained except the last one
+            for i in prev_power_of_2..(num_scripts - 1) {
+                let depth = 2 + i - prev_power_of_2;
+                taproot_builder = taproot_builder
+                    .add_leaf(depth as u8, scripts[i].clone())
+                    .unwrap();
+            }
+            // [None, N1, a_m, a_{m + 1}, a_{n - 2}]
+
+            // push the last leaf node
             taproot_builder = taproot_builder
-                .add_leaf(log2 + 1, scripts[i].clone())
+                .add_leaf(
+                    (num_scripts - prev_power_of_2) as u8,
+                    scripts[num_scripts - 1].clone(),
+                )
                 .unwrap();
         }
-        // [None, N1]
 
-        // push the remained leaf nodes except the last one
-        for i in prev_power_of_2..(num_scripts - 1) {
-            let depth = 2 + i - prev_power_of_2;
-            taproot_builder = taproot_builder
-                .add_leaf(depth as u8, scripts[i].clone())
-                .unwrap();
-        }
-        // [None, N1, a_m, a_{m + 1}, a_{n - 2}]
-
-        // push the last leaf node
-        taproot_builder = taproot_builder
-            .add_leaf(
-                (num_scripts - prev_power_of_2) as u8,
-                scripts[num_scripts - 1].clone(),
-            )
-            .unwrap();
-        // [N0]
         let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
         let witness_program =
             WitnessProgram::p2tr(&secp, internal_key, taproot_spend_info.merkle_root());
