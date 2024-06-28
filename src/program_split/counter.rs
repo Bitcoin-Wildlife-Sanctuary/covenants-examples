@@ -64,7 +64,9 @@ mod test {
     use super::*;
     use bitcoin::hashes::Hash;
     use bitcoin::{ScriptBuf, Sequence, Witness};
-    use bitcoin_scriptexec::{Exec, ExecCtx, Options};
+    use bitcoin_scriptexec::{
+        convert_to_witness, execute_script_with_witness_unlimited_stack, Exec, ExecCtx, Options,
+    };
     use rand::{RngCore, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
@@ -122,7 +124,6 @@ mod test {
                 .and_then(|x| Some(x.previous_output.clone())),
             optional_deposit_input: None,
             new_balance: init_balance - tx_fee,
-            // new_balance: 78910,
         };
 
         // execute every transaction
@@ -142,31 +143,20 @@ mod test {
             )
             .0;
             let witness = &tx_template.tx.input[0].witness;
+
+            // script witness input
             let mut script_witness = vec![];
-
-            // Simulate the script execution by pre-appending all the initial witness elements.
-            let mut script_buf = vec![];
             for entry in witness.iter().take(witness.len() - 2) {
-                script_buf.extend(script! { {entry.to_vec()} }.as_bytes());
                 script_witness.push(entry.to_vec());
+                // script_witness.extend(entry);
             }
-            for entry in witness.iter() {
-                script_witness.push(entry.to_vec());
-            }
-            let script_body = &scripts[i];
-            println!("counter.len = {} bytes", script_body.len());
-            // Copy the full script.
-            script_buf.extend_from_slice(script_body.as_bytes());
 
-            // Run the script by emulating its execution environment.
-            let script = Script::from_bytes(script_buf);
             let mut exec = Exec::new(
                 ExecCtx::Tapscript,
                 Options::default(),
                 tx_template,
-                script,
+                scripts[i].clone(),
                 script_witness,
-                // vec![],
             )
             .expect("error creating exec");
 
@@ -176,9 +166,16 @@ mod test {
                 }
             }
             let res = exec.result().unwrap();
-            println!("{:?}", res);
             assert!(res.success);
-            break;
+
+            // let mut script_body = vec![];
+            // script_body.extend(scripts[i].as_bytes());
+            // println!("transaction {}, script size {}", i, script_body.len());
+            // let exec_result = execute_script_with_witness_unlimited_stack(
+            //     Script::from(script_body),
+            //     convert_to_witness(Script::from(script_witness)).unwrap(),
+            // );
+            // assert!(exec_result.success);
         }
     }
 }

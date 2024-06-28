@@ -1,3 +1,5 @@
+/// Transaction gadget for counter toy case
+///
 use super::counter::CounterUpdateInfo;
 use super::DUST_AMOUNT;
 use crate::SECP256K1_GENERATOR;
@@ -20,6 +22,8 @@ use sha2::Digest;
 pub struct CounterTransaction(pub TxTemplate);
 
 impl CounterTransaction {
+    /// construct a default transaction with predefined tx input(prev_out), balance, and pubkey
+    /// carboose is not included
     pub fn get_default_transaction(
         prev_out: &Vec<TxIn>,
         balance: u64,
@@ -46,6 +50,8 @@ impl CounterTransaction {
         tx
     }
 
+    /// construct a transaction with predefined tx input(prev_out), balance, and pubkey
+    /// caboose is also included (counter + randomizer)
     pub fn get_transaction(
         prev_out: &Vec<TxIn>,
         counter: u32,
@@ -55,6 +61,7 @@ impl CounterTransaction {
     ) -> Transaction {
         let mut tx = Self::get_default_transaction(prev_out, balance, pubkey);
 
+        // caboose for counter transaction
         let witness_program = Self::get_witness_program(counter, randomizer);
         tx.output.push(TxOut {
             value: Amount::from_sat(DUST_AMOUNT),
@@ -63,6 +70,7 @@ impl CounterTransaction {
         tx
     }
 
+    /// caboose specially for counter transaction, who's carrying counter and randomizer
     pub fn get_witness_program(counter: u32, randomizer: u32) -> WitnessProgram {
         WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
             OP_RETURN.to_u8(),
@@ -78,6 +86,8 @@ impl CounterTransaction {
         ]))
     }
 
+    /// construct a transaction signature preimage through trial-and-error method
+    /// return the hash of signature preimage and resulting randomizer
     pub fn get_tx_sig_preimage(
         tx: &mut Transaction,
         pubkey: ScriptBuf,
@@ -151,6 +161,21 @@ impl CounterTransaction {
         (e.unwrap(), randomizer)
     }
 
+    /// New a counter transaction template for execution with specific script, its control_block, tap leaf hash
+    /// and counter public info (storing state transition of counter transactions). And we need to update the counter public info
+    /// as well for the comming transaction.
+    /// input:
+    ///     pubkey, generated with taptree root
+    ///     script, for current transaction
+    ///     control_block, taptree branch of leaf node (current script)
+    ///     leaf_hash, taptree leaf hash
+    ///     public_info, counter state transition
+    ///     step_size, counter update size (only for test)
+    ///     tx_fee, balance update size (only for test)
+    ///
+    /// output:
+    ///     public_info, is updated
+    ///     tx_template, transaction template for execution
     pub fn new(
         pubkey: &ScriptBuf,
         script: &ScriptBuf,

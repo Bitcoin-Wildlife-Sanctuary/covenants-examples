@@ -1,3 +1,4 @@
+/// Taptree gadget
 use bitcoin::key::UntweakedPublicKey;
 use bitcoin::taproot::LeafVersion;
 use bitcoin::taproot::TaprootBuilder;
@@ -12,6 +13,7 @@ pub struct ScriptTapTree {
 }
 
 impl ScriptTapTree {
+    /// construct a taptree with any number of prepared scripts, and generate a pubkey
     pub fn new(scripts: &Vec<ScriptBuf>) -> Self {
         let num_scripts = scripts.len();
         let log2 = (num_scripts as u32).ilog2() as u8;
@@ -27,7 +29,6 @@ impl ScriptTapTree {
         );
 
         // add the individual scripts into Taptree (as leaf node)
-        // push the first prev_power_of_2 leaf nodes
         let mut taproot_builder = TaprootBuilder::new();
         if prev_power_of_2 == 1 {
             taproot_builder = taproot_builder.add_leaf(0, scripts[0].clone()).unwrap();
@@ -36,13 +37,15 @@ impl ScriptTapTree {
                 taproot_builder = taproot_builder.add_leaf(log2, scripts[i].clone()).unwrap();
             }
         } else {
-            // push the previouse power of 2
+            // push the first prev_power_of_2 leaf nodes
             for i in 0..prev_power_of_2 {
                 taproot_builder = taproot_builder
                     .add_leaf(log2 + 1, scripts[i].clone())
                     .unwrap();
             }
-            // push the remained except the last one
+            // [None, N1]
+
+            // push the remained leaf nodes except the last one
             for i in prev_power_of_2..(num_scripts - 1) {
                 let depth = 2 + i - prev_power_of_2;
                 taproot_builder = taproot_builder
@@ -51,13 +54,14 @@ impl ScriptTapTree {
             }
             // [None, N1, a_m, a_{m + 1}, a_{n - 2}]
 
-            // push the last leaf node
+            // push the last leaf node, make sure there's only one node at last which is also the taptree root
             taproot_builder = taproot_builder
                 .add_leaf(
                     (num_scripts - prev_power_of_2) as u8,
                     scripts[num_scripts - 1].clone(),
                 )
                 .unwrap();
+            // [N0]
         }
 
         let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
@@ -71,10 +75,12 @@ impl ScriptTapTree {
         }
     }
 
+    /// obtain pubkey
     pub fn get_pub_key(&self) -> ScriptBuf {
         self.clone().pubkey
     }
 
+    /// get taptree branch of specific leaf node (script)
     pub fn get_control_block(&self, script: &ScriptBuf) -> Vec<u8> {
         let mut control_block_bytes = Vec::new();
         self.clone()
@@ -86,6 +92,7 @@ impl ScriptTapTree {
         control_block_bytes
     }
 
+    /// get hash of specific leaf node
     pub fn get_tap_leaf(script: &ScriptBuf) -> TapLeafHash {
         TapLeafHash::from_script(script, LeafVersion::TapScript)
     }
