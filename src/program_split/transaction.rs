@@ -20,7 +20,7 @@ use sha2::Digest;
 pub struct CounterTransaction(pub TxTemplate);
 
 impl CounterTransaction {
-    fn get_default_transaction(
+    pub fn get_default_transaction(
         prev_out: &Vec<TxIn>,
         balance: u64,
         pubkey: ScriptBuf,
@@ -63,7 +63,7 @@ impl CounterTransaction {
         tx
     }
 
-    fn get_witness_program(counter: u32, randomizer: u32) -> WitnessProgram {
+    pub fn get_witness_program(counter: u32, randomizer: u32) -> WitnessProgram {
         WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
             OP_RETURN.to_u8(),
             OP_PUSHBYTES_8.to_u8(),
@@ -78,7 +78,7 @@ impl CounterTransaction {
         ]))
     }
 
-    fn get_tx_sig_preimage(
+    pub fn get_tx_sig_preimage(
         tx: &mut Transaction,
         pubkey: ScriptBuf,
         leaf_hash: &TapLeafHash,

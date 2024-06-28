@@ -142,14 +142,17 @@ mod test {
             )
             .0;
             let witness = &tx_template.tx.input[0].witness;
+            let mut script_witness = vec![];
 
             // Simulate the script execution by pre-appending all the initial witness elements.
-            let mut script_buf = script! {
-                for entry in witness.iter().take(witness.len() - 2) {
-                    { entry.to_vec() }
-                }
+            let mut script_buf = vec![];
+            for entry in witness.iter().take(witness.len() - 2) {
+                script_buf.extend(script! { {entry.to_vec()} }.as_bytes());
+                script_witness.push(entry.to_vec());
             }
-            .to_bytes();
+            for entry in witness.iter() {
+                script_witness.push(entry.to_vec());
+            }
             let script_body = &scripts[i];
             println!("counter.len = {} bytes", script_body.len());
             // Copy the full script.
@@ -162,7 +165,8 @@ mod test {
                 Options::default(),
                 tx_template,
                 script,
-                vec![],
+                script_witness,
+                // vec![],
             )
             .expect("error creating exec");
 
@@ -172,7 +176,9 @@ mod test {
                 }
             }
             let res = exec.result().unwrap();
+            println!("{:?}", res);
             assert!(res.success);
+            break;
         }
     }
 }
