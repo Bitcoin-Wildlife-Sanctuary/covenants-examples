@@ -15,7 +15,7 @@ use bitcoin_scriptexec::utils::scriptint_vec;
 use bitcoin_scriptexec::TxTemplate;
 use covenants_gadgets::internal_structures::cpp_int_32::CppInt32Gadget;
 use covenants_gadgets::structures::tagged_hash::{get_hashed_tag, HashTag, TaggedHashGadget};
-use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4};
+use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use sha2::Digest;
 use std::str::FromStr;
@@ -23,7 +23,7 @@ use std::str::FromStr;
 const DUST_AMOUNT: u64 = 330;
 
 /// Information necessary to create the new transaction.
-pub struct CounterUpdateInfo {
+pub struct CovenantHints {
     /// The counter value stored in the previous caboose.
     pub prev_counter: u32,
     /// The randomizer used in the previous caboose (for the Schnorr trick to work).
@@ -82,7 +82,7 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
 }
 
 /// Generate the new transaction and return the new transaction as well as the randomizer
-pub fn get_tx(info: &CounterUpdateInfo) -> (TxTemplate, u32) {
+pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
     let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
     let script = get_script();
@@ -300,11 +300,11 @@ pub fn get_script() -> Script {
         // first output: the same script itself
 
         // get a hint: new balance (8 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 8 OP_EQUALVERIFY
 
         // get a hint: this script's scriptpubkey (34 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 34 OP_EQUALVERIFY
 
         // save a copy to the altstack
@@ -328,7 +328,7 @@ pub fn get_script() -> Script {
         OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
 
         // get a hint: the actual counter value in Bitcoin integer format (<=4 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_1ADD OP_1SUB
         OP_DUP 0 OP_GREATERTHAN OP_VERIFY
 
@@ -339,7 +339,7 @@ pub fn get_script() -> Script {
         { CppInt32Gadget::from_positive_bitcoin_integer() }
 
         // get a hint: the randomizer for this transaction (4 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 4 OP_EQUALVERIFY
         OP_CAT3
 
@@ -358,7 +358,7 @@ pub fn get_script() -> Script {
         // current stack body: this scriptpubkey, previous counter, |1-7|
 
         // get a hint: previous tx's txid
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
 
         // save a copy to altstack
@@ -369,7 +369,7 @@ pub fn get_script() -> Script {
         OP_CAT3
 
         // get a hint: previous tx's amount
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 8 OP_EQUALVERIFY
         OP_DUP OP_TOALTSTACK
         OP_CAT2
@@ -389,7 +389,7 @@ pub fn get_script() -> Script {
         // current stack body: this scriptpubkey, previous counter, previous tx's amount, previous tx's txid, |1-11|
 
         // get a hint: tap leaf hash
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
 
         { tap_csv_preimage::step12_ext::Step2KeyVersionGadget::from_constant(0) }
@@ -408,7 +408,7 @@ pub fn get_script() -> Script {
         { TaggedHashGadget::from_provided(&HashTag::BIP340Challenge) }
 
         // get a hint: the sha256 without the last byte
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 31 OP_EQUALVERIFY
 
         OP_DUP { 1 } OP_CAT
@@ -432,11 +432,11 @@ pub fn get_script() -> Script {
         { tx::Step1VersionGadget::from_constant(&Version::ONE) }
 
         // get a hint: first input's outpoint
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 36 OP_EQUALVERIFY
 
         // get a hint: second input's outpoint
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 0 OP_EQUAL OP_TOALTSTACK
         OP_SIZE 36 OP_EQUAL OP_FROMALTSTACK OP_BOOLOR OP_VERIFY
 
@@ -486,7 +486,7 @@ pub fn get_script() -> Script {
         { CppInt32Gadget::from_positive_bitcoin_integer() }
 
         // get a hint: the randomizer for previous transaction (4 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 4 OP_EQUALVERIFY
         OP_CAT3
 
@@ -508,7 +508,7 @@ pub fn get_script() -> Script {
 #[cfg(test)]
 mod test {
     use crate::counter::{
-        get_script, get_script_pub_key_and_control_block, get_tx, CounterUpdateInfo, DUST_AMOUNT,
+        get_script, get_script_pub_key_and_control_block, get_tx, CovenantHints, DUST_AMOUNT,
     };
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
@@ -592,7 +592,7 @@ mod test {
                 })
             }
 
-            let info = CounterUpdateInfo {
+            let info = CovenantHints {
                 prev_counter,
                 prev_randomizer,
                 prev_balance: prev_tx.output[0].value.to_sat(),
@@ -766,7 +766,7 @@ mod test {
             new_balance -= 500; // as for transaction fee
             new_balance -= DUST_AMOUNT;
 
-            let info = CounterUpdateInfo {
+            let info = CovenantHints {
                 prev_counter,
                 prev_randomizer,
                 prev_balance,
@@ -843,7 +843,7 @@ mod test {
         let prev_balance = 4500;
         let new_balance = 4500 - DUST_AMOUNT - 3000;
 
-        let info = CounterUpdateInfo {
+        let info = CovenantHints {
             prev_counter,
             prev_randomizer,
             prev_balance,
