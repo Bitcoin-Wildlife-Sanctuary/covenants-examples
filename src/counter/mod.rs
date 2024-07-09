@@ -120,6 +120,7 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
 
     // Increment the counter by 1, which would give us the new counter.
     let new_counter = info.prev_counter + 1;
+    let old_counter = info.prev_counter;
 
     // Start the search of a working randomizer from 0.
     let mut randomizer = 0u32;
@@ -208,8 +209,11 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
     // this script's scriptpubkey (34 bytes)
     script_execution_witness.push(script_pub_key.to_bytes());
 
-    // the actual number (as a Bitcoin integer)
+    // the new counter (as a Bitcoin integer)
     script_execution_witness.push(scriptint_vec(new_counter as i64));
+
+    // the old counter (as a Bitcoin integer)
+    script_execution_witness.push(scriptint_vec(old_counter as i64));
 
     // the randomizer (4 bytes)
     script_execution_witness.push(randomizer.to_le_bytes().to_vec());
@@ -327,15 +331,24 @@ pub fn get_script() -> Script {
         // push the script hash header
         OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
 
-        // get a hint: the actual counter value in Bitcoin integer format (<=4 bytes)
+        // get a hint: the new counter value in Bitcoin integer format (<=4 bytes)
         OP_HINT
         OP_1ADD OP_1SUB
         OP_DUP 0 OP_GREATERTHAN OP_VERIFY
 
-        // save the previous number into the altstack for later use
-        OP_DUP OP_1SUB OP_TOALTSTACK
+        // save the new counter to the altstack
+        OP_DUP OP_TOALTSTACK
 
-        // extend the actual counter to 4 bytes
+        // get a hint: the old counter value in Bitcoin integer format (<=4 bytes)
+        OP_HINT
+        OP_1ADD OP_1SUB
+        OP_DUP 0 OP_GREATERTHANOREQUAL OP_VERIFY
+
+        // save the previous number into the altstack for later use
+        OP_DUP OP_TOALTSTACK
+        OP_TOALTSTACK
+
+        // extend the new counter to 4 bytes
         { CppInt32Gadget::from_positive_bitcoin_integer() }
 
         // get a hint: the randomizer for this transaction (4 bytes)
@@ -501,7 +514,10 @@ pub fn get_script() -> Script {
         OP_SHA256
         OP_SHA256
 
-        OP_EQUAL
+        OP_EQUALVERIFY
+
+        OP_FROMALTSTACK OP_FROMALTSTACK
+        OP_1SUB OP_EQUAL
     }
 }
 
@@ -512,8 +528,7 @@ mod test {
     };
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
-    use bitcoin::consensus::{Decodable, Encodable};
-    use bitcoin::hashes::{sha256d, Hash};
+    use bitcoin::hashes::Hash;
     use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
     use bitcoin::transaction::Version;
     use bitcoin::{
@@ -643,12 +658,16 @@ mod test {
                 }
             }
             let res = exec.result().unwrap();
+            println!("{:?}", res.final_stack);
+            println!("{:?}", res.error);
             assert!(res.success);
         }
     }
 
     #[test]
     fn test_simulation() {
+        let policy = Policy::default().set_fee(1).set_max_tx_weight(400000);
+
         let prng = Rc::new(RefCell::new(ChaCha20Rng::seed_from_u64(0)));
         let get_rand_txid = || {
             let mut bytes = [0u8; 20];
@@ -781,7 +800,8 @@ mod test {
 
             // Check if the new transaction conforms to the requirement.
             // If so, insert this transaction unconditionally.
-            assert!(db.verify_transaction(&tx_template.tx).is_ok());
+            db.verify_transaction(&tx_template.tx).unwrap();
+            db.check_fees(&tx_template.tx, &policy).unwrap();
             db.insert_transaction_unconditionally(&tx_template.tx)
                 .unwrap();
 
@@ -798,78 +818,5 @@ mod test {
                 .get(1)
                 .and_then(|x| Some(x.previous_output.clone()));
         }
-    }
-
-    #[test]
-    fn test_consistency() {
-        let policy = Policy::default().set_fee(1).set_max_tx_weight(400000);
-
-        let tx1_data = "020000000001019acf43ed7f5a246ddd41594089c4a0f157b443512ea5844a243852257d05f5710000000000fdffffff028813000000000000160014f11c424c8130fa440d4a0302e6a06c0e6d741ab205d10e00000000001600147ec82fa13b7ba313b4cc4ea67812e9c11f4f960902473044022012fc1f00b48b14143fa8779e15859a88a4e67f25b4b1d960bee8fd2edade483802203c21c771793677fc1e4439857b1dd40cfea6870dba60c8c49a465b97e3ce6045012103cd33798d7aa483b259f3ba8996a65f62c04a39b15c4b3d0234674fe82dd240aeafff0200";
-        let tx2_data = "01000000000101d4b0610c3363351b60993bc76d12fbb4afa68a132483c496444f1827053192750000000000ffffffff02941100000000000022512022d49e6696cb33db2d6b5d8c44b4dfd0c7e5c701bb8d4d23d9e81eca928310f14a010000000000002200202775ad76ba4cd805e2b41b9ef18c644904debd8fb19dbb50e7db061f85e2d5dd024730440220226e2b0c70c5c8895a29ced195c930631fcc3f8a398e2cdd860c5e43fdd71e7902202be9c113b6729eef19254906ea014fdbe9c522188afd3f87cb0cf8ec8196d7d801210385cabf57efd22267de723e80aac89c06136b058648ee5d4225746c695bc829d500000000";
-
-        let tx1 = {
-            let bytes = hex::decode(tx1_data).unwrap();
-            Transaction::consensus_decode(&mut bytes.as_slice()).unwrap()
-        };
-
-        let tx2 = {
-            let bytes = hex::decode(tx2_data).unwrap();
-            Transaction::consensus_decode(&mut bytes.as_slice()).unwrap()
-        };
-
-        let db = Database::connect_temporary_database().unwrap();
-        db.insert_transaction_unconditionally(&tx1).unwrap();
-
-        assert!(db.verify_transaction(&tx2).is_ok());
-        db.check_fees(&tx2, &policy).unwrap();
-        db.insert_transaction_unconditionally(&tx2).unwrap();
-
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(
-            &hex::decode("68e2d729431eae48ff8deda8b2437b80dfba1973d834ef25a7c9e84dcb772231")
-                .unwrap(),
-        );
-        txid.reverse();
-
-        let mut prev_txid = [0u8; 32];
-        prev_txid.copy_from_slice(
-            &hex::decode("7592310527184f4496c48324138aa6afb4fb126dc73b99601b3563330c61b0d4")
-                .unwrap(),
-        );
-        prev_txid.reverse();
-
-        let prev_counter = 0;
-        let prev_randomizer = 12;
-        let prev_balance = 4500;
-        let new_balance = 4500 - DUST_AMOUNT - 3000;
-
-        let info = CovenantHints {
-            prev_counter,
-            prev_randomizer,
-            prev_balance,
-            prev_txid: Txid::from_raw_hash(*sha256d::Hash::from_bytes_ref(&txid)),
-            prev_tx_outpoint1: OutPoint {
-                txid: Txid::from_raw_hash(*sha256d::Hash::from_bytes_ref(&prev_txid)),
-                vout: 0,
-            },
-            prev_tx_outpoint2: None,
-            optional_deposit_input: None,
-            new_balance,
-        };
-
-        let (tx_template, randomizer) = get_tx(&info);
-
-        let tx = tx_template.tx;
-
-        let mut bytes = vec![];
-        tx.consensus_encode(&mut bytes).unwrap();
-
-        println!("tx: {}", hex::encode(bytes.clone()));
-        println!("randomizer: {}", randomizer);
-        println!("tx length: {}", bytes.len());
-
-        db.verify_transaction(&tx).unwrap();
-        db.check_fees(&tx, &policy).unwrap();
-        db.insert_transaction_unconditionally(&tx).unwrap();
     }
 }
