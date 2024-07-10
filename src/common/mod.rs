@@ -82,7 +82,8 @@ pub fn step1() -> Script {
 /// Output:
 /// - preimage_head
 /// - pubkey
-/// - new_balance| 34 | pubkey | DUST_AMOUNT
+/// - first_output
+/// - dust for second_output
 ///
 pub fn step2() -> Script {
     script! {
@@ -112,30 +113,39 @@ pub fn step2() -> Script {
 /// Step 3: deal with the second output via the new and old state hash, computing the new state's script.
 ///
 /// Hint:
-/// - new state hash value
-/// - old state hash value
+/// - new_state_hash
+/// - old_state_hash
 ///
 /// Input:
 /// - preimage_head
 /// - pubkey
-/// - new_balance| 34 | pubkey | DUST_AMOUNT
+/// - first_output
+/// - dust for second_output
+///
+/// Output:
+/// - pubkey
+/// - old_state_hash
+/// - preimage_head | Hash(first output | second_output)
+///
+/// Altstack:
+/// - new_state_hash
+/// - old_state_hash
 ///
 pub fn step3() -> Script {
     script! {
         // script hash header
         OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_36
-        // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT, header]
 
-        // get a hint: the new state hash value
+        // get a hint: the new state hash
         OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
-        // save the new PC+state hash to the altstack
+        // save the new state hash to the altstack
         OP_DUP OP_TOALTSTACK
 
-        // get a hint: the old state hash value
+        // get a hint: the old state hash
         OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
-        // save the previous state into the altstack for later use
+        // save the old state hash in the altstack for later use
         OP_DUP OP_TOALTSTACK
         OP_TOALTSTACK
 
@@ -166,10 +176,10 @@ pub fn covenant() -> Script {
         // [..., preimage_head]
 
         step2
-        // [..., preimage_head, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
+        // [..., preimage_head, pubkey, first_output | dust]
 
         step3
-        // [..., pubkey, prev_counter, preimage_head | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer))]
+        // [..., pubkey, old_state_hash, preimage_head | Hash(first_output | second_output)]
 
         { tap_csv_preimage::Step7SpendTypeGadget::from_constant(1, false) } OP_CAT2
         //  [..., pubkey, prev_counter, preimage_head | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)) | 2]
