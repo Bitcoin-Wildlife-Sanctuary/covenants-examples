@@ -166,23 +166,31 @@ pub fn step3() -> Script {
     }
 }
 
-/// Implementation of a standard covenant.
-pub fn covenant() -> Script {
-    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
-    // the public key.
-    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+/// Step 4: provide the original data of the input.
+///
+/// Hint:
+/// - old_txid
+/// - old_amount
+///
+/// Input:
+/// - pubkey
+/// - old_state_hash
+/// - preimage_head | Hash(first output | second_output)
+///
+/// Output:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+/// - preimage_head | Hash(first output | second_output) | this_input
+///
+/// Altstack:
+/// - new_state_hash
+/// - old_state_hash
+///
+pub fn step4() -> Script {
     script! {
-        step1
-        // [..., preimage_head]
-
-        step2
-        // [..., preimage_head, pubkey, first_output | dust]
-
-        step3
-        // [..., pubkey, old_state_hash, preimage_head | Hash(first_output | second_output)]
-
         { tap_csv_preimage::Step7SpendTypeGadget::from_constant(1, false) } OP_CAT2
-        //  [..., pubkey, prev_counter, preimage_head | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)) | 2]
 
         // get a hint: previous tx's txid
         OP_HINT
@@ -212,9 +220,34 @@ pub fn covenant() -> Script {
 
         OP_FROMALTSTACK OP_SWAP
         OP_FROMALTSTACK OP_SWAP
+    }
+}
 
-        // current stack body: this scriptpubkey, previous counter, previous tx's amount, previous tx's txid, |1-11|
-
+/// Step 5: provide the extension data.
+///
+/// Hint:
+/// - tap leaf hash
+///
+/// Input:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+/// - preimage_head | Hash(first output | second_output) | this_input
+///
+/// Output:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+/// - preimage_head | Hash(first output | second_output) | this_input | ext
+///
+/// Altstack:
+/// - new_state_hash
+/// - old_state_hash
+///
+pub fn step5() -> Script {
+    script! {
         // get a hint: tap leaf hash
         OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
@@ -222,8 +255,35 @@ pub fn covenant() -> Script {
         { tap_csv_preimage::step12_ext::Step2KeyVersionGadget::from_constant(0) }
         { tap_csv_preimage::step12_ext::Step3CodeSepPosGadget::no_code_sep_executed() }
         OP_CAT4
+    }
+}
 
-        // current stack body: this scriptpubkey, previous counter, previous tx's amount, previous tx's txid, this script's checksighash preimage
+/// Step 6: verify the reflection using the Schnorr trick.
+///
+/// Hint:
+/// - the SHA256 BIP-340 challenge hash without the last byte (which should be 0x01)
+///
+/// Input:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+/// - preimage_head | Hash(first output | second_output) | this_input | ext
+///
+/// Output:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+///
+/// The script fails if the preimage doesn't match the transaction.
+///
+pub fn step6() -> Script {
+    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
+    // the public key.
+    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+
+    script! {
         { TaggedHashGadget::from_provided(&HashTag::TapSighash) }
 
         { secp256k1_generator.clone() }
@@ -241,10 +301,6 @@ pub fn covenant() -> Script {
         OP_DUP { 1 } OP_CAT
         OP_ROT OP_EQUALVERIFY
 
-        // current stack body:
-        //   this scriptpubkey, previous counter, previous tx's amount, previous tx's txid,
-        //   prefix
-
         OP_FROMALTSTACK OP_SWAP
 
         OP_PUSHBYTES_2 OP_PUSHBYTES_2 OP_RIGHT
@@ -252,9 +308,30 @@ pub fn covenant() -> Script {
 
         OP_FROMALTSTACK
         OP_CHECKSIGVERIFY
+    }
+}
 
-        // current stack body:
-        //   this scriptpubkey, previous counter, previous tx's amount, previous tx's txid
+/// Implementation of a standard covenant.
+pub fn covenant() -> Script {
+    script! {
+        step1
+        // [..., preimage_head]
+
+        step2
+        // [..., preimage_head, pubkey, first_output | dust]
+
+        step3
+        // [..., pubkey, old_state_hash, preimage_head | Hash(first_output | second_output)]
+
+        step4
+        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input ]
+
+        step5
+        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input | ext ]
+
+        step6
+        // checksigverify done
+        // [..., pubkey, old_state_hash, old_amount, old_txid]
 
         { tx::Step1VersionGadget::from_constant(&Version::ONE) }
 
