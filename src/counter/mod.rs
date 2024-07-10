@@ -58,14 +58,6 @@ impl CovenantProgram for CounterProgram {
                 // stack:
                 // - old state hash
                 // - new state hash
-                // - old PC
-                // - new PC
-
-                // require the new PC to be 123456
-                123456 OP_EQUALVERIFY
-
-                // require the old PC to be 123456
-                123456 OP_EQUALVERIFY
 
                 // get the old counter and the new counter
                 OP_HINT OP_HINT
@@ -100,7 +92,7 @@ impl CovenantProgram for CounterProgram {
 }
 
 /// Compute the taproot of the script (which only has the script path, but not the key path).
-pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
+pub fn get_script_pub_key_and_control_block<T: CovenantProgram>() -> (ScriptBuf, Vec<u8>) {
     // Build the witness program.
     let secp = bitcoin::secp256k1::Secp256k1::new();
     let internal_key = UntweakedPublicKey::from(
@@ -110,7 +102,11 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
         .unwrap(),
     );
 
-    let script = get_script();
+    let scripts = T::get_all_scripts();
+    let script = script! {
+        covenant
+        { scripts.get(&123456).unwrap().clone() }
+    };
 
     let taproot_builder = TaprootBuilder::new().add_leaf(0, script.clone()).unwrap();
     let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
@@ -139,8 +135,11 @@ pub fn get_tx<T: CovenantProgram>(
     new_state: &T::State,
 ) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
-    let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
-    let script = get_script();
+    let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block::<T>();
+    let script = script! {
+        covenant
+        { T::get_all_scripts().get(&123456).unwrap().clone() }
+    };
     let tap_leaf_hash = TapLeafHash::from_script(
         &ScriptBuf::from_bytes(script.to_bytes()),
         LeafVersion::TapScript,
@@ -340,42 +339,11 @@ pub fn get_tx<T: CovenantProgram>(
     (tx_template, randomizer)
 }
 
-pub fn get_script() -> Script {
-    script! {
-        covenant
-        // hint:
-        // - old counter
-        // - new counter
-        //
-        // stack:
-        // - old state hash
-        // - new state hash
-
-        OP_HINT OP_HINT
-        OP_2DUP OP_TOALTSTACK OP_TOALTSTACK
-
-        // stack:
-        // - old state hash
-        // - new state hash
-        // - old counter
-        // - new counter
-
-        OP_SHA256 OP_ROT OP_EQUALVERIFY
-        OP_SHA256 OP_EQUALVERIFY
-
-        // stack:
-        // - old counter
-        // - new counter
-        OP_FROMALTSTACK OP_FROMALTSTACK
-        OP_1SUB OP_EQUAL
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use crate::common::{CovenantHints, DUST_AMOUNT};
+    use crate::common::{covenant, CovenantHints, CovenantProgram, DUST_AMOUNT};
     use crate::counter::{
-        get_script, get_script_pub_key_and_control_block, get_tx, CounterProgram, CounterState,
+        get_script_pub_key_and_control_block, get_tx, CounterProgram, CounterState,
     };
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
@@ -435,7 +403,7 @@ mod test {
                 output: vec![
                     TxOut {
                         value: Amount::from_sat(123456),
-                        script_pubkey: get_script_pub_key_and_control_block().0,
+                        script_pubkey: get_script_pub_key_and_control_block::<CounterProgram>().0,
                     },
                     TxOut {
                         value: Amount::from_sat(DUST_AMOUNT),
@@ -485,7 +453,10 @@ mod test {
             witness.pop();
 
             // Simulate the script execution.
-            let script = get_script();
+            let script = script! {
+                covenant
+                { CounterProgram::get_all_scripts().get(&123456).unwrap().clone() }
+            };
 
             if input_num == 1 {
                 println!("counter.len = {} bytes", script.len());
@@ -513,7 +484,7 @@ mod test {
 
         let db = Database::connect_temporary_database().unwrap();
 
-        let (script_pub_key, _) = get_script_pub_key_and_control_block();
+        let (script_pub_key, _) = get_script_pub_key_and_control_block::<CounterProgram>();
 
         let prev_counter = 0;
         let prev_hash = {
