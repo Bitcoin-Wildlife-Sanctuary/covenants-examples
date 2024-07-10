@@ -10,42 +10,53 @@ use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use std::collections::BTreeMap;
 
-/// Trait for covenants
+/// Trait for a covenant program.
 pub trait CovenantProgram {
+    /// Type of the state for this covenant program.
     type State: Pushable + Clone;
 
+    /// Create an empty state.
     fn new() -> Self::State;
+
+    /// Compute the state hash, which is application-specific.
     fn get_hash(state: &Self::State) -> Vec<u8>;
+
+    /// Get all the scripts of this application.
     fn get_all_scripts() -> BTreeMap<usize, Script>;
+
+    /// Run the program to move from the previous state to the new state.
     fn run(old_state: &Self::State) -> Result<Self::State>;
 }
 
 /// Information necessary to create the new transaction.
-pub struct CovenantHints {
+pub struct CovenantInput {
     /// The randomizer used in the previous caboose (for the Schnorr trick to work).
-    pub prev_randomizer: u32,
-    /// The balance of the previous program.
-    pub prev_balance: u64,
-    /// The txid of the previous program.
-    pub prev_txid: Txid,
+    pub old_randomizer: u32,
+    /// The balance carried by the old state.
+    pub old_balance: u64,
+    /// The txid of the old state.
+    pub old_txid: Txid,
 
     /// The first input's outpoint of the transaction with txid.
-    pub prev_tx_outpoint1: OutPoint,
+    pub input_outpoint1: OutPoint,
     /// The second input's outpoint of the transaction with txid.
     /// Note: the second input is optional.
-    pub prev_tx_outpoint2: Option<OutPoint>,
+    pub input_outpoint2: Option<OutPoint>,
 
     /// The second input in the new transaction, used to deposit more money into the program.
     /// Note: The witness must be provided for this input.
     pub optional_deposit_input: Option<TxIn>,
 
-    /// The balance of the new program, which needs to be smaller than the old balance plus the deposit,
+    /// The balance of the new state, which needs to be smaller than the old balance plus the deposit,
     /// but does not need to equal (some sats will be used to cover the transaction fee).
     pub new_balance: u64,
 }
 
-/// stack output:
-///     [..., csv_preimage]
+/// Step 1: Create the beginning part of the preimage.
+///
+/// Output:
+/// - preimage_head
+///
 pub fn step1() -> Script {
     script! {
         // For more information about the construction of the Tap CheckSigVerify Preimage, please
@@ -59,20 +70,28 @@ pub fn step1() -> Script {
     }
 }
 
-/// process new_balance and pubkey, consume new_balance
-/// stack input:
-///     [new_balance, pubkey,..., csv_preimage]
+/// Step 2: Assemble the first output, which is the program itself, with the new balance.
 ///
-/// stack output:
-///     [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
+/// Hint:
+/// - new balance
+/// - script pubkey
+///
+/// Input:
+/// - preimage_head
+///
+/// Output:
+/// - preimage_head
+/// - pubkey
+/// - new_balance| 34 | pubkey | DUST_AMOUNT
+///
 pub fn step2() -> Script {
     script! {
         // get a hint: new balance (8 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 8 OP_EQUALVERIFY
 
         // get a hint: this script's scriptpubkey (34 bytes)
-        OP_DEPTH OP_1SUB OP_ROLL
+        OP_HINT
         OP_SIZE 34 OP_EQUALVERIFY
 
         // save pubkey to the altstack
@@ -90,33 +109,33 @@ pub fn step2() -> Script {
     }
 }
 
-pub fn covenant() -> Script {
-    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
-    // the public key.
-    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+/// Step 3: deal with the second output via the new and old state hash, computing the new state's script.
+///
+/// Hint:
+/// - new state hash value
+/// - old state hash value
+///
+/// Input:
+/// - preimage_head
+/// - pubkey
+/// - new_balance| 34 | pubkey | DUST_AMOUNT
+///
+pub fn step3() -> Script {
     script! {
-        // csv_preimage
-        step1
-        // [..., csv_preimage]
-
-        // new_balance| 34 | pubkey | DUST_AMOUNT
-        step2
-        // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
-
         // script hash header
         OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_36
         // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT, header]
 
-        // get a hint: the new PC+state hash value
+        // get a hint: the new state hash value
         OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
         // save the new PC+state hash to the altstack
         OP_DUP OP_TOALTSTACK
 
-        // get a hint: the old PC+state hash value
+        // get a hint: the old state hash value
         OP_HINT
         OP_SIZE 32 OP_EQUALVERIFY
-        // save the previous PC+state into the altstack for later use
+        // save the previous state into the altstack for later use
         OP_DUP OP_TOALTSTACK
         OP_TOALTSTACK
 
@@ -134,10 +153,26 @@ pub fn covenant() -> Script {
         OP_ROT OP_SWAP OP_CAT2
 
         OP_FROMALTSTACK OP_SWAP
+    }
+}
+
+/// Implementation of a standard covenant.
+pub fn covenant() -> Script {
+    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
+    // the public key.
+    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+    script! {
+        step1
+        // [..., preimage_head]
+
+        step2
+        // [..., preimage_head, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
+
+        step3
+        // [..., pubkey, prev_counter, preimage_head | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer))]
 
         { tap_csv_preimage::Step7SpendTypeGadget::from_constant(1, false) } OP_CAT2
-
-        // current stack body: this scriptpubkey, previous counter, |1-7|
+        //  [..., pubkey, prev_counter, preimage_head | Hash(balance | 34 | pubkey | dust | 34_0_32 | Hash(header | new_counter | randomizer)) | 2]
 
         // get a hint: previous tx's txid
         OP_HINT
@@ -283,4 +318,5 @@ pub fn covenant() -> Script {
     }
 }
 
+/// The dust amount for a taproot transaction.
 pub const DUST_AMOUNT: u64 = 330;

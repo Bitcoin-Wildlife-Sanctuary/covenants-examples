@@ -1,4 +1,4 @@
-use crate::common::{covenant, CovenantHints, CovenantProgram, DUST_AMOUNT};
+use crate::common::{covenant, CovenantInput, CovenantProgram, DUST_AMOUNT};
 use crate::treepp::pushable::{Builder, Pushable};
 use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
@@ -23,10 +23,13 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
+/// The covenant program of the counter example.
 pub struct CounterProgram;
 
+/// State of the counter example, which is a counter.
 #[derive(Clone)]
 pub struct CounterState {
+    /// The counter.
     pub counter: usize,
 }
 
@@ -130,7 +133,7 @@ pub fn get_script_pub_key_and_control_block<T: CovenantProgram>() -> (ScriptBuf,
 
 /// Generate the new transaction and return the new transaction as well as the randomizer
 pub fn get_tx<T: CovenantProgram>(
-    info: &CovenantHints,
+    info: &CovenantInput,
     old_state: &T::State,
     new_state: &T::State,
 ) -> (TxTemplate, u32) {
@@ -155,7 +158,7 @@ pub fn get_tx<T: CovenantProgram>(
 
     // Push the previous program as the first input, with the witness left blank as a placeholder.
     tx.input.push(TxIn {
-        previous_output: OutPoint::new(info.prev_txid.clone(), 0),
+        previous_output: OutPoint::new(info.old_txid.clone(), 0),
         script_sig: ScriptBuf::new(),
         sequence: Sequence::default(),
         witness: Witness::new(), // placeholder
@@ -209,7 +212,7 @@ pub fn get_tx<T: CovenantProgram>(
                     &Prevouts::One(
                         0,
                         &TxOut {
-                            value: Amount::from_sat(info.prev_balance),
+                            value: Amount::from_sat(info.old_balance),
                             script_pubkey: script_pub_key.clone(),
                         },
                     ),
@@ -265,10 +268,10 @@ pub fn get_tx<T: CovenantProgram>(
     script_execution_witness.push(randomizer.to_le_bytes().to_vec());
 
     // previous tx's txid (32 bytes)
-    script_execution_witness.push(AsRef::<[u8]>::as_ref(&info.prev_txid).to_vec());
+    script_execution_witness.push(AsRef::<[u8]>::as_ref(&info.old_txid).to_vec());
 
     // previous balance (8 bytes)
-    script_execution_witness.push(info.prev_balance.to_le_bytes().to_vec());
+    script_execution_witness.push(info.old_balance.to_le_bytes().to_vec());
 
     // tap leaf hash (32 bytes)
     script_execution_witness.push(AsRef::<[u8]>::as_ref(&tap_leaf_hash).to_vec());
@@ -279,16 +282,16 @@ pub fn get_tx<T: CovenantProgram>(
     // the first outpoint (32 + 4 = 36 bytes)
     {
         let mut bytes = vec![];
-        info.prev_tx_outpoint1.consensus_encode(&mut bytes).unwrap();
+        info.input_outpoint1.consensus_encode(&mut bytes).unwrap();
 
         script_execution_witness.push(bytes);
     }
 
     // the second outpoint (0 or 36 bytes)
     {
-        if info.prev_tx_outpoint2.is_some() {
+        if info.input_outpoint2.is_some() {
             let mut bytes = vec![];
-            info.prev_tx_outpoint2
+            info.input_outpoint2
                 .unwrap()
                 .consensus_encode(&mut bytes)
                 .unwrap();
@@ -300,7 +303,7 @@ pub fn get_tx<T: CovenantProgram>(
     }
 
     // previous randomizer
-    script_execution_witness.push(info.prev_randomizer.to_le_bytes().to_vec());
+    script_execution_witness.push(info.old_randomizer.to_le_bytes().to_vec());
 
     // application-specific witnesses
     let application_witness = convert_to_witness(script! {
@@ -329,7 +332,7 @@ pub fn get_tx<T: CovenantProgram>(
     let tx_template = TxTemplate {
         tx,
         prevouts: vec![TxOut {
-            value: Amount::from_sat(info.prev_balance),
+            value: Amount::from_sat(info.old_balance),
             script_pubkey: script_pub_key.clone(),
         }],
         input_idx: 0,
@@ -341,7 +344,7 @@ pub fn get_tx<T: CovenantProgram>(
 
 #[cfg(test)]
 mod test {
-    use crate::common::{covenant, CovenantHints, CovenantProgram, DUST_AMOUNT};
+    use crate::common::{covenant, CovenantInput, CovenantProgram, DUST_AMOUNT};
     use crate::counter::{
         get_script_pub_key_and_control_block, get_tx, CounterProgram, CounterState,
     };
@@ -427,12 +430,12 @@ mod test {
                 })
             }
 
-            let info = CovenantHints {
-                prev_randomizer,
-                prev_balance: prev_tx.output[0].value.to_sat(),
-                prev_txid: prev_tx.compute_txid(),
-                prev_tx_outpoint1: prev_tx.input[0].previous_output.clone(),
-                prev_tx_outpoint2: prev_tx
+            let info = CovenantInput {
+                old_randomizer: prev_randomizer,
+                old_balance: prev_tx.output[0].value.to_sat(),
+                old_txid: prev_tx.compute_txid(),
+                input_outpoint1: prev_tx.input[0].previous_output.clone(),
+                input_outpoint2: prev_tx
                     .input
                     .get(1)
                     .and_then(|x| Some(x.previous_output.clone())),
@@ -595,12 +598,12 @@ mod test {
             new_balance -= 500; // as for transaction fee
             new_balance -= DUST_AMOUNT;
 
-            let info = CovenantHints {
-                prev_randomizer,
-                prev_balance,
-                prev_txid: prev_txid.clone(),
-                prev_tx_outpoint1: prev_tx_outpoint1.clone(),
-                prev_tx_outpoint2: prev_tx_outpoint2.clone(),
+            let info = CovenantInput {
+                old_randomizer: prev_randomizer,
+                old_balance: prev_balance,
+                old_txid: prev_txid.clone(),
+                input_outpoint1: prev_tx_outpoint1.clone(),
+                input_outpoint2: prev_tx_outpoint2.clone(),
                 optional_deposit_input: deposit_input,
                 new_balance,
             };
