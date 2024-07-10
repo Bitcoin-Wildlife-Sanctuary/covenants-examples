@@ -138,14 +138,14 @@ pub fn step2() -> Script {
 //      [..., pubkey, prev_counter, balance|34|pubkey|dust, header | new_counter]
 pub fn counter_ops() -> Script {
     script! {
-        // check new_counter, and save to altstack
+        // check new_counter greater or equal than 1, and save to altstack
         OP_DEPTH OP_1SUB OP_ROLL
-        OP_DUP 0 OP_GREATERTHAN OP_VERIFY
+        OP_DUP OP_1SUB OP_1ADD 0 OP_GREATERTHAN OP_VERIFY
         OP_DUP OP_TOALTSTACK
 
-        // check prev_counter, and save to altstack
+        // check prev_counter greater or equal than 0, and save to altstack
         OP_DEPTH OP_1SUB OP_ROLL
-        OP_DUP 0 OP_GREATERTHAN OP_VERIFY
+        OP_DUP 0 OP_GREATERTHANOREQUAL OP_VERIFY
         OP_DUP OP_TOALTSTACK OP_TOALTSTACK
         { CppInt32Gadget::from_positive_bitcoin_integer() }
         //  [..., pubkey, balance|34|pubkey|dust, header, new_counter] | [new_counter, prev_counter, prev_counter]
