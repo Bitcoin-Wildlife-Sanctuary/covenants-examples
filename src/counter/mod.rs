@@ -1,4 +1,4 @@
-use crate::common::{covenant, CovenantHeader, CovenantHints, CovenantProgram, DUST_AMOUNT};
+use crate::common::{covenant, CovenantHints, CovenantProgram, DUST_AMOUNT};
 use crate::treepp::pushable::{Builder, Pushable};
 use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
@@ -44,14 +44,10 @@ impl CovenantProgram for CounterProgram {
         Self::State { counter: 0 }
     }
 
-    fn get_header(state: &Self::State) -> CovenantHeader {
+    fn get_hash(state: &Self::State) -> Vec<u8> {
         let mut sha256 = Sha256::new();
         Update::update(&mut sha256, &scriptint_vec(state.counter as i64));
-        let state_hash = sha256.finalize().to_vec();
-        CovenantHeader {
-            pc: 123456,
-            state_hash,
-        }
+        sha256.finalize().to_vec()
     }
 
     fn get_all_scripts() -> BTreeMap<usize, ScriptBuf> {
@@ -177,8 +173,8 @@ pub fn get_tx<T: CovenantProgram>(
         script_pubkey: script_pub_key.clone(),
     });
 
-    let old_state_hash = T::get_header(old_state).state_hash;
-    let new_state_hash = T::get_header(new_state).state_hash;
+    let old_state_hash = T::get_hash(old_state);
+    let new_state_hash = T::get_hash(new_state);
 
     // Start the search of a working randomizer from 0.
     let mut randomizer = 0u32;

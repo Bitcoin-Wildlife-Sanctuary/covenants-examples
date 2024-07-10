@@ -10,20 +10,12 @@ use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use std::collections::BTreeMap;
 
-/// Covenant header, which consists of a program counter and an application-specific state hash.
-pub struct CovenantHeader {
-    /// Program counter.
-    pub pc: usize,
-    /// State hash.
-    pub state_hash: Vec<u8>,
-}
-
 /// Trait for covenants
 pub trait CovenantProgram {
     type State: Pushable + Clone;
 
     fn new() -> Self::State;
-    fn get_header(state: &Self::State) -> CovenantHeader;
+    fn get_hash(state: &Self::State) -> Vec<u8>;
     fn get_all_scripts() -> BTreeMap<usize, Script>;
     fn run(old_state: &Self::State) -> Result<Self::State>;
 }
