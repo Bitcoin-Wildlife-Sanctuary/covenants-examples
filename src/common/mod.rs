@@ -3,10 +3,8 @@ use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
 use anyhow::Result;
 use bitcoin::absolute::LockTime;
-use bitcoin::opcodes::all::{OP_EQUALVERIFY, OP_PUSHBYTES_36};
 use bitcoin::transaction::Version;
 use bitcoin::{Amount, OutPoint, Sequence, TapSighashType, TxIn, Txid};
-use covenants_gadgets::internal_structures::cpp_int_32::CppInt32Gadget;
 use covenants_gadgets::structures::tagged_hash::{HashTag, TaggedHashGadget};
 use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
@@ -22,13 +20,12 @@ pub struct CovenantHeader {
 
 /// Trait for covenants
 pub trait CovenantProgram {
-    type NewProgramInfo;
-    type ExecutionHints: Pushable;
+    type State: Pushable + Clone;
 
-    fn new(new_program_info: &Self::NewProgramInfo) -> Self;
-    fn get_cur_header(&self) -> CovenantHeader;
+    fn new() -> Self::State;
+    fn get_header(state: &Self::State) -> CovenantHeader;
     fn get_all_scripts() -> BTreeMap<usize, Script>;
-    fn run(&mut self) -> Result<Self::ExecutionHints>;
+    fn run(old_state: &Self::State) -> Result<Self::State>;
 }
 
 /// Information necessary to create the new transaction.

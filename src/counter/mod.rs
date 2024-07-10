@@ -6,8 +6,7 @@ use anyhow::Result;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::key::UntweakedPublicKey;
-use bitcoin::opcodes::all::{OP_FROMALTSTACK, OP_PUSHBYTES_36, OP_RETURN, OP_SHA256};
-use bitcoin::opcodes::Ordinary::{OP_EQUALVERIFY, OP_TOALTSTACK};
+use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_RETURN};
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{LeafVersion, TaprootBuilder};
 use bitcoin::transaction::Version;
@@ -24,35 +23,30 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-pub struct CounterProgram {
+pub struct CounterProgram;
+
+#[derive(Clone)]
+pub struct CounterState {
     pub counter: usize,
 }
 
-#[derive(Clone)]
-pub struct CounterHints {
-    pub old_counter: usize,
-    pub new_counter: usize,
-}
-
-impl Pushable for CounterHints {
+impl Pushable for CounterState {
     fn bitcoin_script_push(&self, mut builder: Builder) -> Builder {
-        builder = self.old_counter.bitcoin_script_push(builder);
-        builder = self.new_counter.bitcoin_script_push(builder);
+        builder = self.counter.bitcoin_script_push(builder);
         builder
     }
 }
 
 impl CovenantProgram for CounterProgram {
-    type NewProgramInfo = ();
-    type ExecutionHints = CounterHints;
+    type State = CounterState;
 
-    fn new(_new_program_info: &Self::NewProgramInfo) -> Self {
-        Self { counter: 0 }
+    fn new() -> Self::State {
+        Self::State { counter: 0 }
     }
 
-    fn get_cur_header(&self) -> CovenantHeader {
+    fn get_header(state: &Self::State) -> CovenantHeader {
         let mut sha256 = Sha256::new();
-        Update::update(&mut sha256, &scriptint_vec(self.counter as i64));
+        Update::update(&mut sha256, &scriptint_vec(state.counter as i64));
         let state_hash = sha256.finalize().to_vec();
         CovenantHeader {
             pc: 123456,
@@ -102,15 +96,9 @@ impl CovenantProgram for CounterProgram {
         map
     }
 
-    fn run(&mut self) -> Result<Self::ExecutionHints> {
-        let old_counter = self.counter;
-        let new_counter = old_counter + 1;
-
-        self.counter = new_counter;
-
-        Ok(CounterHints {
-            old_counter,
-            new_counter,
+    fn run(old_state: &Self::State) -> Result<Self::State> {
+        Ok(CounterState {
+            counter: old_state.counter + 1,
         })
     }
 }
@@ -149,7 +137,11 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
 }
 
 /// Generate the new transaction and return the new transaction as well as the randomizer
-pub fn get_tx(info: &CovenantHints, application_hint: &CounterHints) -> (TxTemplate, u32) {
+pub fn get_tx<T: CovenantProgram>(
+    info: &CovenantHints,
+    old_state: &T::State,
+    new_state: &T::State,
+) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
     let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
     let script = get_script();
@@ -185,21 +177,8 @@ pub fn get_tx(info: &CovenantHints, application_hint: &CounterHints) -> (TxTempl
         script_pubkey: script_pub_key.clone(),
     });
 
-    // Increment the counter by 1, which would give us the new counter.
-    let new_counter = application_hint.new_counter;
-    let old_counter = application_hint.old_counter;
-
-    // Compute the new counter hash.
-    let new_counter_hash = {
-        let mut sha256 = Sha256::new();
-        Update::update(&mut sha256, &scriptint_vec(new_counter as i64));
-        sha256.finalize().to_vec()
-    };
-    let old_counter_hash = {
-        let mut sha256 = Sha256::new();
-        Update::update(&mut sha256, &scriptint_vec(old_counter as i64));
-        sha256.finalize().to_vec()
-    };
+    let old_state_hash = T::get_header(old_state).state_hash;
+    let new_state_hash = T::get_header(new_state).state_hash;
 
     // Start the search of a working randomizer from 0.
     let mut randomizer = 0u32;
@@ -210,7 +189,7 @@ pub fn get_tx(info: &CovenantHints, application_hint: &CounterHints) -> (TxTempl
     let e;
     loop {
         let mut script_bytes = vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()];
-        script_bytes.extend_from_slice(&new_counter_hash);
+        script_bytes.extend_from_slice(&new_state_hash);
         script_bytes.extend_from_slice(&randomizer.to_le_bytes());
 
         // Generate the corresponding caboose with the new counter.
@@ -282,10 +261,10 @@ pub fn get_tx(info: &CovenantHints, application_hint: &CounterHints) -> (TxTempl
     script_execution_witness.push(script_pub_key.to_bytes());
 
     // the new counter hash
-    script_execution_witness.push(new_counter_hash);
+    script_execution_witness.push(new_state_hash.clone());
 
     // the old counter hash
-    script_execution_witness.push(old_counter_hash);
+    script_execution_witness.push(old_state_hash.clone());
 
     // the randomizer (4 bytes)
     script_execution_witness.push(randomizer.to_le_bytes().to_vec());
@@ -330,7 +309,8 @@ pub fn get_tx(info: &CovenantHints, application_hint: &CounterHints) -> (TxTempl
 
     // application-specific witnesses
     let application_witness = convert_to_witness(script! {
-        { application_hint.clone() }
+        { old_state.clone() }
+        { new_state.clone() }
     })
     .unwrap();
 
@@ -390,7 +370,6 @@ pub fn get_script() -> Script {
         // stack:
         // - old counter
         // - new counter
-
         OP_FROMALTSTACK OP_FROMALTSTACK
         OP_1SUB OP_EQUAL
     }
@@ -399,11 +378,13 @@ pub fn get_script() -> Script {
 #[cfg(test)]
 mod test {
     use crate::common::{CovenantHints, DUST_AMOUNT};
-    use crate::counter::{get_script, get_script_pub_key_and_control_block, get_tx, CounterHints};
+    use crate::counter::{
+        get_script, get_script_pub_key_and_control_block, get_tx, CounterProgram, CounterState,
+    };
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
-    use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_PUSHBYTES_8, OP_RETURN};
+    use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_RETURN};
     use bitcoin::transaction::Version;
     use bitcoin::{
         Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WScriptHash,
@@ -495,13 +476,14 @@ mod test {
                 new_balance: 78910,
             };
 
-            let application_hint = CounterHints {
-                old_counter: prev_counter,
-                new_counter: prev_counter + 1,
+            let old_state = CounterState {
+                counter: prev_counter as usize,
+            };
+            let new_state = CounterState {
+                counter: (prev_counter + 1) as usize,
             };
 
-            // Construct the transaction.
-            let (tx_template, _) = get_tx(&info, &application_hint);
+            let (tx_template, _) = get_tx::<CounterProgram>(&info, &old_state, &new_state);
             let mut witness = tx_template.tx.input[0].witness.to_vec();
             witness.pop();
             witness.pop();
@@ -537,6 +519,20 @@ mod test {
 
         let (script_pub_key, _) = get_script_pub_key_and_control_block();
 
+        let prev_counter = 0;
+        let prev_hash = {
+            let mut sha256 = Sha256::new();
+            Update::update(&mut sha256, &scriptint_vec(prev_counter as i64));
+            sha256.finalize().to_vec()
+        };
+        let prev_randomizer = 12u32;
+
+        let mut script_bytes = vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()];
+        script_bytes.extend_from_slice(&prev_hash);
+        script_bytes.extend_from_slice(&prev_randomizer.to_le_bytes());
+
+        let prev_witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(script_bytes));
+
         // initialize the counter and accept it unconditionally
         let init_tx = Transaction {
             version: Version::ONE,
@@ -557,18 +553,7 @@ mod test {
                 },
                 TxOut {
                     value: Amount::from_sat(DUST_AMOUNT),
-                    script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(&[
-                        OP_RETURN.to_u8(),
-                        OP_PUSHBYTES_8.to_u8(),
-                        0,
-                        0,
-                        0,
-                        0,
-                        12, // 12 is for testing purposes.
-                        0,
-                        0,
-                        0,
-                    ])),
+                    script_pubkey: ScriptBuf::new_witness_program(&prev_witness_program),
                 },
             ],
         };
@@ -653,12 +638,14 @@ mod test {
                 new_balance,
             };
 
-            let application_hint = CounterHints {
-                old_counter: prev_counter as usize,
-                new_counter: (prev_counter + 1) as usize,
+            let old_state = CounterState {
+                counter: prev_counter as usize,
+            };
+            let new_state = CounterState {
+                counter: (prev_counter + 1) as usize,
             };
 
-            let (tx_template, randomizer) = get_tx(&info, &application_hint);
+            let (tx_template, randomizer) = get_tx::<CounterProgram>(&info, &old_state, &new_state);
 
             // Check if the new transaction conforms to the requirement.
             // If so, insert this transaction unconditionally.
