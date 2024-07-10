@@ -1,17 +1,38 @@
+use crate::treepp::pushable::Pushable;
 use crate::treepp::*;
-use bitcoin::{Amount, OutPoint, Sequence, TapSighashType, Txid, TxIn};
+use crate::SECP256K1_GENERATOR;
+use anyhow::Result;
 use bitcoin::absolute::LockTime;
+use bitcoin::opcodes::all::{OP_EQUALVERIFY, OP_PUSHBYTES_36};
 use bitcoin::transaction::Version;
+use bitcoin::{Amount, OutPoint, Sequence, TapSighashType, TxIn, Txid};
 use covenants_gadgets::internal_structures::cpp_int_32::CppInt32Gadget;
 use covenants_gadgets::structures::tagged_hash::{HashTag, TaggedHashGadget};
 use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
-use crate::SECP256K1_GENERATOR;
+use std::collections::BTreeMap;
+
+/// Covenant header, which consists of a program counter and an application-specific state hash.
+pub struct CovenantHeader {
+    /// Program counter.
+    pub pc: usize,
+    /// State hash.
+    pub state_hash: Vec<u8>,
+}
+
+/// Trait for covenants
+pub trait CovenantProgram {
+    type NewProgramInfo;
+    type ExecutionHints: Pushable;
+
+    fn new(new_program_info: &Self::NewProgramInfo) -> Self;
+    fn get_cur_header(&self) -> CovenantHeader;
+    fn get_all_scripts() -> BTreeMap<usize, Script>;
+    fn run(&mut self) -> Result<Self::ExecutionHints>;
+}
 
 /// Information necessary to create the new transaction.
 pub struct CovenantHints {
-    /// The counter value stored in the previous caboose.
-    pub prev_counter: u32,
     /// The randomizer used in the previous caboose (for the Schnorr trick to work).
     pub prev_randomizer: u32,
     /// The balance of the previous program.
@@ -34,10 +55,9 @@ pub struct CovenantHints {
     pub new_balance: u64,
 }
 
-pub fn covenants() -> Script {
-    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
-    // the public key.
-    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+/// stack output:
+///     [..., csv_preimage]
+pub fn step1() -> Script {
     script! {
         // For more information about the construction of the Tap CheckSigVerify Preimage, please
         // check out the `covenants-gadgets` repository.
@@ -47,20 +67,26 @@ pub fn covenants() -> Script {
         { tap_csv_preimage::Step3VersionGadget::from_constant(&Version::ONE) }
         { tap_csv_preimage::Step4LockTimeGadget::from_constant_absolute(&LockTime::ZERO) }
         OP_CAT4
+    }
+}
 
-        // current stack body: |1-4|
-
-        // first output: the same script itself
-
+/// process new_balance and pubkey, consume new_balance
+/// stack input:
+///     [new_balance, pubkey,..., csv_preimage]
+///
+/// stack output:
+///     [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
+pub fn step2() -> Script {
+    script! {
         // get a hint: new balance (8 bytes)
-        OP_HINT
+        OP_DEPTH OP_1SUB OP_ROLL
         OP_SIZE 8 OP_EQUALVERIFY
 
         // get a hint: this script's scriptpubkey (34 bytes)
-        OP_HINT
+        OP_DEPTH OP_1SUB OP_ROLL
         OP_SIZE 34 OP_EQUALVERIFY
 
-        // save a copy to the altstack
+        // save pubkey to the altstack
         OP_DUP OP_TOALTSTACK
 
         OP_PUSHBYTES_1 OP_PUSHBYTES_34
@@ -68,37 +94,42 @@ pub fn covenants() -> Script {
 
         OP_FROMALTSTACK OP_SWAP
 
-        // current stack body: |1-4|, this scriptpubkey, |output1|
-
-        // second output: the data carrier
-
-        // the balance must be DUST_AMOUNT
+        // CAT dust amount
         OP_PUSHBYTES_8 OP_PUSHBYTES_74 OP_PUSHBYTES_1 OP_PUSHBYTES_0 OP_PUSHBYTES_0
         OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0
         OP_CAT
+    }
+}
 
-        // push the script hash header
-        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
+pub fn covenant() -> Script {
+    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
+    // the public key.
+    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+    script! {
+        // csv_preimage
+        step1
+        // [..., csv_preimage]
 
-        // get a hint: the new counter value in Bitcoin integer format (<=4 bytes)
+        // new_balance| 34 | pubkey | DUST_AMOUNT
+        step2
+        // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT]
+
+        // script hash header
+        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_36
+        // [..., csv_preimage, pubkey, new_balance| 34 | pubkey | DUST_AMOUNT, header]
+
+        // get a hint: the new PC+state hash value
         OP_HINT
-        OP_1ADD OP_1SUB
-        OP_DUP 0 OP_GREATERTHAN OP_VERIFY
-
-        // save the new counter to the altstack
+        OP_SIZE 32 OP_EQUALVERIFY
+        // save the new PC+state hash to the altstack
         OP_DUP OP_TOALTSTACK
 
-        // get a hint: the old counter value in Bitcoin integer format (<=4 bytes)
+        // get a hint: the old PC+state hash value
         OP_HINT
-        OP_1ADD OP_1SUB
-        OP_DUP 0 OP_GREATERTHANOREQUAL OP_VERIFY
-
-        // save the previous number into the altstack for later use
+        OP_SIZE 32 OP_EQUALVERIFY
+        // save the previous PC+state into the altstack for later use
         OP_DUP OP_TOALTSTACK
         OP_TOALTSTACK
-
-        // extend the new counter to 4 bytes
-        { CppInt32Gadget::from_positive_bitcoin_integer() }
 
         // get a hint: the randomizer for this transaction (4 bytes)
         OP_HINT
@@ -224,7 +255,7 @@ pub fn covenants() -> Script {
         OP_CAT2
 
         // current stack body:
-        //   this scriptpubkey, previous counter, previous tx's amount, previous tx's txid
+        //   this scriptpubkey, previous hash, previous tx's amount, previous tx's txid
         //   txid preimage (1-4)
 
         // get the previous amount
@@ -240,18 +271,13 @@ pub fn covenants() -> Script {
         OP_CAT2
 
         // push the script hash header
-        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_8
-
+        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_36
         3 OP_ROLL
-
-        // extend the actual counter to 4 bytes
-        { CppInt32Gadget::from_positive_bitcoin_integer() }
 
         // get a hint: the randomizer for previous transaction (4 bytes)
         OP_HINT
         OP_SIZE 4 OP_EQUALVERIFY
         OP_CAT3
-
         OP_SHA256
 
         OP_PUSHBYTES_3 OP_PUSHBYTES_34 OP_PUSHBYTES_0 OP_PUSHBYTES_32
@@ -262,7 +288,6 @@ pub fn covenants() -> Script {
 
         OP_SHA256
         OP_SHA256
-
         OP_EQUALVERIFY
 
         OP_FROMALTSTACK OP_FROMALTSTACK

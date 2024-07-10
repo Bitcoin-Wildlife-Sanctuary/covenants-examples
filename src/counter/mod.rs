@@ -1,22 +1,119 @@
+use crate::common::{covenant, CovenantHeader, CovenantHints, CovenantProgram, DUST_AMOUNT};
+use crate::treepp::pushable::{Builder, Pushable};
 use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
+use anyhow::Result;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::key::UntweakedPublicKey;
-use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
+use bitcoin::opcodes::all::{OP_FROMALTSTACK, OP_PUSHBYTES_36, OP_RETURN, OP_SHA256};
+use bitcoin::opcodes::Ordinary::{OP_EQUALVERIFY, OP_TOALTSTACK};
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{LeafVersion, TaprootBuilder};
 use bitcoin::transaction::Version;
 use bitcoin::{
-    Amount, OutPoint, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut
-    , Witness, WitnessProgram,
+    Amount, OutPoint, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut,
+    Witness, WitnessProgram,
 };
 use bitcoin_scriptexec::utils::scriptint_vec;
-use bitcoin_scriptexec::TxTemplate;
+use bitcoin_scriptexec::{convert_to_witness, TxTemplate};
 use covenants_gadgets::structures::tagged_hash::get_hashed_tag;
-use sha2::Digest;
+use covenants_gadgets::utils::pseudo::OP_HINT;
+use sha2::digest::Update;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::str::FromStr;
-use crate::common::{CovenantHints, covenants, DUST_AMOUNT};
+
+pub struct CounterProgram {
+    pub counter: usize,
+}
+
+#[derive(Clone)]
+pub struct CounterHints {
+    pub old_counter: usize,
+    pub new_counter: usize,
+}
+
+impl Pushable for CounterHints {
+    fn bitcoin_script_push(&self, mut builder: Builder) -> Builder {
+        builder = self.old_counter.bitcoin_script_push(builder);
+        builder = self.new_counter.bitcoin_script_push(builder);
+        builder
+    }
+}
+
+impl CovenantProgram for CounterProgram {
+    type NewProgramInfo = ();
+    type ExecutionHints = CounterHints;
+
+    fn new(_new_program_info: &Self::NewProgramInfo) -> Self {
+        Self { counter: 0 }
+    }
+
+    fn get_cur_header(&self) -> CovenantHeader {
+        let mut sha256 = Sha256::new();
+        Update::update(&mut sha256, &scriptint_vec(self.counter as i64));
+        let state_hash = sha256.finalize().to_vec();
+        CovenantHeader {
+            pc: 123456,
+            state_hash,
+        }
+    }
+
+    fn get_all_scripts() -> BTreeMap<usize, ScriptBuf> {
+        let mut map = BTreeMap::new();
+        map.insert(
+            123456,
+            script! {
+                // stack:
+                // - old state hash
+                // - new state hash
+                // - old PC
+                // - new PC
+
+                // require the new PC to be 123456
+                123456 OP_EQUALVERIFY
+
+                // require the old PC to be 123456
+                123456 OP_EQUALVERIFY
+
+                // get the old counter and the new counter
+                OP_HINT OP_HINT
+                // save a copy to the altstack
+                // altstack: new counter, old counter
+                OP_2DUP OP_TOALTSTACK OP_TOALTSTACK
+
+                // stack:
+                // - old state hash
+                // - new state hash
+                // - old counter
+                // - new counter
+                OP_SHA256 OP_ROT OP_EQUALVERIFY
+                OP_SHA256 OP_EQUALVERIFY
+
+                OP_FROMALTSTACK OP_FROMALTSTACK
+
+                // stack:
+                // - old counter
+                // - new counter
+                OP_1SUB OP_EQUAL
+            },
+        );
+        map
+    }
+
+    fn run(&mut self) -> Result<Self::ExecutionHints> {
+        let old_counter = self.counter;
+        let new_counter = old_counter + 1;
+
+        self.counter = new_counter;
+
+        Ok(CounterHints {
+            old_counter,
+            new_counter,
+        })
+    }
+}
 
 /// Compute the taproot of the script (which only has the script path, but not the key path).
 pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
@@ -52,7 +149,7 @@ pub fn get_script_pub_key_and_control_block() -> (ScriptBuf, Vec<u8>) {
 }
 
 /// Generate the new transaction and return the new transaction as well as the randomizer
-pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
+pub fn get_tx(info: &CovenantHints, application_hint: &CounterHints) -> (TxTemplate, u32) {
     // Compute the script pub key, control block, and tap leaf hash.
     let (script_pub_key, control_block_bytes) = get_script_pub_key_and_control_block();
     let script = get_script();
@@ -89,8 +186,20 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
     });
 
     // Increment the counter by 1, which would give us the new counter.
-    let new_counter = info.prev_counter + 1;
-    let old_counter = info.prev_counter;
+    let new_counter = application_hint.new_counter;
+    let old_counter = application_hint.old_counter;
+
+    // Compute the new counter hash.
+    let new_counter_hash = {
+        let mut sha256 = Sha256::new();
+        Update::update(&mut sha256, &scriptint_vec(new_counter as i64));
+        sha256.finalize().to_vec()
+    };
+    let old_counter_hash = {
+        let mut sha256 = Sha256::new();
+        Update::update(&mut sha256, &scriptint_vec(old_counter as i64));
+        sha256.finalize().to_vec()
+    };
 
     // Start the search of a working randomizer from 0.
     let mut randomizer = 0u32;
@@ -100,19 +209,12 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
     // and the signature preimage is calculated by serializing the transaction in a specific way.
     let e;
     loop {
+        let mut script_bytes = vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()];
+        script_bytes.extend_from_slice(&new_counter_hash);
+        script_bytes.extend_from_slice(&randomizer.to_le_bytes());
+
         // Generate the corresponding caboose with the new counter.
-        let witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
-            OP_RETURN.to_u8(),
-            OP_PUSHBYTES_8.to_u8(),
-            (new_counter & 0xff) as u8,
-            ((new_counter >> 8) & 0xff) as u8,
-            ((new_counter >> 16) & 0xff) as u8,
-            ((new_counter >> 24) & 0xff) as u8,
-            (randomizer & 0xff) as u8,
-            ((randomizer >> 8) & 0xff) as u8,
-            ((randomizer >> 16) & 0xff) as u8,
-            ((randomizer >> 24) & 0xff) as u8,
-        ]));
+        let witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(script_bytes));
 
         // Temporarily insert this output.
         // If this output doesn't work, in a later step, we will revert the insertion and remove this
@@ -179,11 +281,11 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
     // this script's scriptpubkey (34 bytes)
     script_execution_witness.push(script_pub_key.to_bytes());
 
-    // the new counter (as a Bitcoin integer)
-    script_execution_witness.push(scriptint_vec(new_counter as i64));
+    // the new counter hash
+    script_execution_witness.push(new_counter_hash);
 
-    // the old counter (as a Bitcoin integer)
-    script_execution_witness.push(scriptint_vec(old_counter as i64));
+    // the old counter hash
+    script_execution_witness.push(old_counter_hash);
 
     // the randomizer (4 bytes)
     script_execution_witness.push(randomizer.to_le_bytes().to_vec());
@@ -226,6 +328,14 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
     // previous randomizer
     script_execution_witness.push(info.prev_randomizer.to_le_bytes().to_vec());
 
+    // application-specific witnesses
+    let application_witness = convert_to_witness(script! {
+        { application_hint.clone() }
+    })
+    .unwrap();
+
+    script_execution_witness.extend_from_slice(&application_witness);
+
     // Construct the witness that will be included in the TxIn.
     let mut script_tx_witness = Witness::new();
     // all the initial stack elements
@@ -256,33 +366,59 @@ pub fn get_tx(info: &CovenantHints) -> (TxTemplate, u32) {
 
 pub fn get_script() -> Script {
     script! {
-        covenants
+        covenant
+        // hint:
+        // - old counter
+        // - new counter
+        //
+        // stack:
+        // - old state hash
+        // - new state hash
+
+        OP_HINT OP_HINT
+        OP_2DUP OP_TOALTSTACK OP_TOALTSTACK
+
+        // stack:
+        // - old state hash
+        // - new state hash
+        // - old counter
+        // - new counter
+
+        OP_SHA256 OP_ROT OP_EQUALVERIFY
+        OP_SHA256 OP_EQUALVERIFY
+
+        // stack:
+        // - old counter
+        // - new counter
+
+        OP_FROMALTSTACK OP_FROMALTSTACK
         OP_1SUB OP_EQUAL
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::counter::{
-        get_script, get_script_pub_key_and_control_block, get_tx,
-    };
+    use crate::common::{CovenantHints, DUST_AMOUNT};
+    use crate::counter::{get_script, get_script_pub_key_and_control_block, get_tx, CounterHints};
     use crate::treepp::*;
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
-    use bitcoin::opcodes::all::{OP_PUSHBYTES_8, OP_RETURN};
+    use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_PUSHBYTES_8, OP_RETURN};
     use bitcoin::transaction::Version;
     use bitcoin::{
-        Amount, OutPoint, ScriptBuf, Sequence, Transaction, Txid, TxIn, TxOut, Witness,
-        WitnessProgram, WScriptHash,
+        Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WScriptHash,
+        Witness, WitnessProgram,
     };
-    use bitcoin_scriptexec::{Exec, ExecCtx, Options};
+    use bitcoin_scriptexec::execute_script_with_witness_and_tx_template;
+    use bitcoin_scriptexec::utils::scriptint_vec;
     use bitcoin_simulator::database::Database;
     use bitcoin_simulator::policy::Policy;
     use rand::{Rng, RngCore, SeedableRng};
     use rand_chacha::ChaCha20Rng;
+    use sha2::digest::Update;
+    use sha2::{Digest, Sha256};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use crate::common::{CovenantHints, DUST_AMOUNT};
 
     #[test]
     fn test_script_execution() {
@@ -292,20 +428,18 @@ mod test {
         let mut random_txid_preimage = [0u8; 20];
         prng.fill_bytes(&mut random_txid_preimage);
         let prev_counter = 123;
-        let prev_randomizer = 45678;
+        let prev_hash = {
+            let mut sha256 = Sha256::new();
+            Update::update(&mut sha256, &scriptint_vec(prev_counter as i64));
+            sha256.finalize().to_vec()
+        };
+        let prev_randomizer = 45678u32;
 
-        let prev_witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(vec![
-            OP_RETURN.to_u8(),
-            OP_PUSHBYTES_8.to_u8(),
-            (prev_counter & 0xff) as u8,
-            ((prev_counter >> 8) & 0xff) as u8,
-            ((prev_counter >> 16) & 0xff) as u8,
-            ((prev_counter >> 24) & 0xff) as u8,
-            (prev_randomizer & 0xff) as u8,
-            ((prev_randomizer >> 8) & 0xff) as u8,
-            ((prev_randomizer >> 16) & 0xff) as u8,
-            ((prev_randomizer >> 24) & 0xff) as u8,
-        ]));
+        let mut script_bytes = vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()];
+        script_bytes.extend_from_slice(&prev_hash);
+        script_bytes.extend_from_slice(&prev_randomizer.to_le_bytes());
+
+        let prev_witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(script_bytes));
 
         // Perform the testing with a single input or with two inputs.
         for input_num in 1..=2 {
@@ -349,7 +483,6 @@ mod test {
             }
 
             let info = CovenantHints {
-                prev_counter,
                 prev_randomizer,
                 prev_balance: prev_tx.output[0].value.to_sat(),
                 prev_txid: prev_tx.compute_txid(),
@@ -362,46 +495,30 @@ mod test {
                 new_balance: 78910,
             };
 
-            // Construct the transaction.
-            let (tx_template, _) = get_tx(&info);
-            let witness = &tx_template.tx.input[0].witness;
+            let application_hint = CounterHints {
+                old_counter: prev_counter,
+                new_counter: prev_counter + 1,
+            };
 
-            // Simulate the script execution by pre-appending all the initial witness elements.
-            let mut script_buf = script! {
-                for entry in witness.iter().take(witness.len() - 2) {
-                    { entry.to_vec() }
-                }
-            }
-            .to_bytes();
-            let script_body = get_script();
+            // Construct the transaction.
+            let (tx_template, _) = get_tx(&info, &application_hint);
+            let mut witness = tx_template.tx.input[0].witness.to_vec();
+            witness.pop();
+            witness.pop();
+
+            // Simulate the script execution.
+            let script = get_script();
 
             if input_num == 1 {
-                println!("counter.len = {} bytes", script_body.len());
+                println!("counter.len = {} bytes", script.len());
             }
 
-            // Copy the full script.
-            script_buf.extend_from_slice(script_body.as_bytes());
-
-            // Run the script by emulating its execution environment.
-            let script = Script::from_bytes(script_buf);
-            let mut exec = Exec::new(
-                ExecCtx::Tapscript,
-                Options::default(),
+            let exec_result = execute_script_with_witness_and_tx_template(
+                Script::from_bytes(script.to_bytes()),
                 tx_template,
-                script,
-                vec![],
-            )
-            .expect("error creating exec");
-
-            loop {
-                if exec.exec_next().is_err() {
-                    break;
-                }
-            }
-            let res = exec.result().unwrap();
-            println!("{:?}", res.final_stack);
-            println!("{:?}", res.error);
-            assert!(res.success);
+                witness,
+            );
+            assert!(exec_result.success);
         }
     }
 
@@ -527,7 +644,6 @@ mod test {
             new_balance -= DUST_AMOUNT;
 
             let info = CovenantHints {
-                prev_counter,
                 prev_randomizer,
                 prev_balance,
                 prev_txid: prev_txid.clone(),
@@ -537,7 +653,12 @@ mod test {
                 new_balance,
             };
 
-            let (tx_template, randomizer) = get_tx(&info);
+            let application_hint = CounterHints {
+                old_counter: prev_counter as usize,
+                new_counter: (prev_counter + 1) as usize,
+            };
+
+            let (tx_template, randomizer) = get_tx(&info, &application_hint);
 
             // Check if the new transaction conforms to the requirement.
             // If so, insert this transaction unconditionally.
