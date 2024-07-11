@@ -18,11 +18,16 @@ use bitcoin_scriptexec::{convert_to_witness, TxTemplate};
 use covenants_gadgets::structures::tagged_hash::get_hashed_tag;
 use sha2::Digest;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 
 /// The covenant script implementation.
 pub mod bitcoin_script;
+
+/// Test module
+#[cfg(test)]
+pub mod test;
 
 /// The dust amount for a P2WSH transaction.
 pub const DUST_AMOUNT: u64 = 330;
@@ -38,7 +43,10 @@ pub static TAPROOT_SPEND_INFOS: OnceLock<Mutex<BTreeMap<&'static str, TaprootSpe
 /// Trait for a covenant program.
 pub trait CovenantProgram {
     /// Type of the state for this covenant program.
-    type State: Pushable + Clone;
+    type State: Pushable + Debug + Clone;
+
+    /// Type of input (could be an enum).
+    type Input: Pushable + Clone;
 
     /// Unique name for caching.
     const CACHE_NAME: &'static str;
@@ -53,7 +61,7 @@ pub trait CovenantProgram {
     fn get_all_scripts() -> BTreeMap<usize, Script>;
 
     /// Run the program to move from the previous state to the new state.
-    fn run(id: usize, old_state: &Self::State) -> Result<Self::State>;
+    fn run(id: usize, old_state: &Self::State, input: &Self::Input) -> Result<Self::State>;
 }
 
 /// Information necessary to create the new transaction.
@@ -96,21 +104,16 @@ pub fn compute_taproot_spend_info<T: CovenantProgram>() -> TaprootSpendInfo {
         .unwrap();
     let scripts = map.entry(T::CACHE_NAME).or_insert_with(T::get_all_scripts);
 
-    let depth = scripts.len().next_power_of_two().ilog2() as u8;
-
-    let mut taproot_builder = TaprootBuilder::new();
-
-    for (_, script) in scripts.iter() {
-        taproot_builder = taproot_builder
-            .add_leaf(
-                depth,
-                script! {
+    let taproot_builder = TaprootBuilder::with_huffman_tree(scripts.iter().map(|(_, script)| {
+        (
+            1,
+            script! {
                     covenant
                     { script.clone() }
-                },
-            )
-            .unwrap()
-    }
+            },
+        )
+    }))
+    .unwrap();
 
     let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
     taproot_spend_info
@@ -182,6 +185,7 @@ pub fn get_tx<T: CovenantProgram>(
     id: usize,
     old_state: &T::State,
     new_state: &T::State,
+    input: &T::Input,
 ) -> (TxTemplate, u32) {
     let script_pub_key = get_script_pub_key::<T>();
     let (control_block_bytes, script) = get_control_block_and_script::<T>(id);
@@ -349,6 +353,7 @@ pub fn get_tx<T: CovenantProgram>(
     let application_witness = convert_to_witness(script! {
         { old_state.clone() }
         { new_state.clone() }
+        { input.clone() }
     })
     .unwrap();
 
