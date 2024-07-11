@@ -171,6 +171,6 @@ mod test {
             })
         };
 
-        simulation_test::<CounterProgram>(&mut test_generator);
+        simulation_test::<CounterProgram>(100, &mut test_generator);
     }
 }
