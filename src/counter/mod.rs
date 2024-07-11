@@ -41,31 +41,6 @@ impl Into<Script> for CounterInput {
     }
 }
 
-/// Common part among the three scripts, which checks the consistency of the state hash.
-fn state_hash_check() -> Script {
-    script! {
-        // stack:
-        // - old state hash
-        // - new state hash
-
-        // get the old counter and the new counter
-        OP_HINT OP_HINT
-        // save a copy to the altstack
-        // altstack: new counter, old counter
-        OP_2DUP OP_TOALTSTACK OP_TOALTSTACK
-
-        // stack:
-        // - old state hash
-        // - new state hash
-        // - old counter
-        // - new counter
-        OP_SHA256 OP_ROT OP_EQUALVERIFY
-        OP_SHA256 OP_EQUALVERIFY
-
-        OP_FROMALTSTACK OP_FROMALTSTACK
-    }
-}
-
 impl CovenantProgram for CounterProgram {
     type State = CounterState;
 
@@ -89,8 +64,6 @@ impl CovenantProgram for CounterProgram {
         map.insert(
             123456,
             script! {
-                state_hash_check
-
                 // stack:
                 // - old counter
                 // - new counter
@@ -101,8 +74,6 @@ impl CovenantProgram for CounterProgram {
         map.insert(
             123457,
             script! {
-                state_hash_check
-
                 // stack:
                 // - old counter
                 // - new counter
@@ -113,8 +84,6 @@ impl CovenantProgram for CounterProgram {
         map.insert(
             456789,
             script! {
-                state_hash_check
-
                 // stack:
                 // - old counter
                 // - new counter
@@ -126,6 +95,30 @@ impl CovenantProgram for CounterProgram {
             },
         );
         map
+    }
+
+    fn get_common_prefix() -> Script {
+        script! {
+            // stack:
+            // - old state hash
+            // - new state hash
+
+            // get the old counter and the new counter
+            OP_HINT OP_HINT
+            // save a copy to the altstack
+            // altstack: new counter, old counter
+            OP_2DUP OP_TOALTSTACK OP_TOALTSTACK
+
+            // stack:
+            // - old state hash
+            // - new state hash
+            // - old counter
+            // - new counter
+            OP_SHA256 OP_ROT OP_EQUALVERIFY
+            OP_SHA256 OP_EQUALVERIFY
+
+            OP_FROMALTSTACK OP_FROMALTSTACK
+        }
     }
 
     fn run(id: usize, old_state: &Self::State, input: &Self::Input) -> Result<Self::State> {
