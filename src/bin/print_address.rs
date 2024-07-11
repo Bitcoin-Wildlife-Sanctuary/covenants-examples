@@ -2,12 +2,13 @@ use bitcoin::hashes::Hash;
 use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_RETURN};
 use bitcoin::{Address, Network, ScriptBuf, WScriptHash};
 use bitcoin_scriptexec::utils::scriptint_vec;
-use covenants_examples::counter::{get_script_pub_key_and_control_block, CounterProgram};
+use covenants_examples::common::get_script_pub_key;
+use covenants_examples::counter::CounterProgram;
 use sha2::digest::Update;
 use sha2::{Digest, Sha256};
 
 fn main() {
-    let (script_pub_key, _) = get_script_pub_key_and_control_block::<CounterProgram>();
+    let script_pub_key = get_script_pub_key::<CounterProgram>();
 
     let program_address =
         Address::from_script(script_pub_key.as_script(), Network::Signet).unwrap();

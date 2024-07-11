@@ -1,22 +1,47 @@
+use crate::common::bitcoin_script::covenant;
 use crate::treepp::pushable::Pushable;
 use crate::treepp::*;
 use crate::SECP256K1_GENERATOR;
 use anyhow::Result;
 use bitcoin::absolute::LockTime;
+use bitcoin::consensus::Encodable;
+use bitcoin::key::UntweakedPublicKey;
+use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_RETURN};
+use bitcoin::sighash::{Prevouts, SighashCache};
+use bitcoin::taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo};
 use bitcoin::transaction::Version;
-use bitcoin::{Amount, OutPoint, Sequence, TapSighashType, TxIn, Txid};
-use covenants_gadgets::structures::tagged_hash::{HashTag, TaggedHashGadget};
-use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
-use covenants_gadgets::wizards::{tap_csv_preimage, tx};
+use bitcoin::{
+    Amount, OutPoint, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut,
+    Txid, Witness, WitnessProgram,
+};
+use bitcoin_scriptexec::{convert_to_witness, TxTemplate};
+use covenants_gadgets::structures::tagged_hash::get_hashed_tag;
+use sha2::Digest;
 use std::collections::BTreeMap;
+use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
+
+/// The covenant script implementation.
+pub mod bitcoin_script;
 
 /// The dust amount for a P2WSH transaction.
 pub const DUST_AMOUNT: u64 = 330;
+
+/// The script map.
+pub static SCRIPT_MAPS: OnceLock<Mutex<BTreeMap<&'static str, BTreeMap<usize, Script>>>> =
+    OnceLock::new();
+
+/// The taproot spend info.
+pub static TAPROOT_SPEND_INFOS: OnceLock<Mutex<BTreeMap<&'static str, TaprootSpendInfo>>> =
+    OnceLock::new();
 
 /// Trait for a covenant program.
 pub trait CovenantProgram {
     /// Type of the state for this covenant program.
     type State: Pushable + Clone;
+
+    /// Unique name for caching.
+    const CACHE_NAME: &'static str;
 
     /// Create an empty state.
     fn new() -> Self::State;
@@ -28,7 +53,7 @@ pub trait CovenantProgram {
     fn get_all_scripts() -> BTreeMap<usize, Script>;
 
     /// Run the program to move from the previous state to the new state.
-    fn run(old_state: &Self::State) -> Result<Self::State>;
+    fn run(id: usize, old_state: &Self::State) -> Result<Self::State>;
 }
 
 /// Information necessary to create the new transaction.
@@ -55,436 +80,304 @@ pub struct CovenantInput {
     pub new_balance: u64,
 }
 
-/// Step 1: Create the beginning part of the preimage.
-///
-/// Output:
-/// - preimage_head
-///
-pub fn step1() -> Script {
-    script! {
-        // For more information about the construction of the Tap CheckSigVerify Preimage, please
-        // check out the `covenants-gadgets` repository.
+/// Initialize the taproot spend info.
+pub fn compute_taproot_spend_info<T: CovenantProgram>() -> TaprootSpendInfo {
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let internal_key = UntweakedPublicKey::from(
+        bitcoin::secp256k1::PublicKey::from_str(
+            "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+        )
+        .unwrap(),
+    );
 
-        { tap_csv_preimage::Step1EpochGadget::default() }
-        { tap_csv_preimage::Step2HashTypeGadget::from_constant(&TapSighashType::AllPlusAnyoneCanPay) }
-        { tap_csv_preimage::Step3VersionGadget::from_constant(&Version::ONE) }
-        { tap_csv_preimage::Step4LockTimeGadget::from_constant_absolute(&LockTime::ZERO) }
-        OP_CAT4
+    let mut map = SCRIPT_MAPS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap();
+    let scripts = map.entry(T::CACHE_NAME).or_insert_with(T::get_all_scripts);
+
+    let depth = scripts.len().next_power_of_two().ilog2() as u8;
+
+    let mut taproot_builder = TaprootBuilder::new();
+
+    for (_, script) in scripts.iter() {
+        taproot_builder = taproot_builder
+            .add_leaf(
+                depth,
+                script! {
+                    covenant
+                    { script.clone() }
+                },
+            )
+            .unwrap()
     }
+
+    let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+    taproot_spend_info
 }
 
-/// Step 2: Assemble the first output, which is the program itself, with the new balance.
-///
-/// Hint:
-/// - new balance
-/// - script pubkey
-///
-/// Input:
-/// - preimage_head
-///
-/// Output:
-/// - preimage_head
-/// - pubkey
-/// - first_output
-/// - dust for second_output
-///
-pub fn step2() -> Script {
-    script! {
-        // get a hint: new balance (8 bytes)
-        OP_HINT
-        OP_SIZE 8 OP_EQUALVERIFY
+/// Compute the script pub key.
+pub fn get_script_pub_key<T: CovenantProgram>() -> ScriptBuf {
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let internal_key = UntweakedPublicKey::from(
+        bitcoin::secp256k1::PublicKey::from_str(
+            "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+        )
+        .unwrap(),
+    );
 
-        // get a hint: this script's scriptpubkey (34 bytes)
-        OP_HINT
-        OP_SIZE 34 OP_EQUALVERIFY
+    let mut map = TAPROOT_SPEND_INFOS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap();
+    let taproot_spend_info = map
+        .entry(T::CACHE_NAME)
+        .or_insert_with(compute_taproot_spend_info::<T>);
 
-        // save pubkey to the altstack
-        OP_DUP OP_TOALTSTACK
-
-        OP_PUSHBYTES_1 OP_PUSHBYTES_34
-        OP_SWAP OP_CAT3
-
-        OP_FROMALTSTACK OP_SWAP
-
-        // CAT dust amount
-        OP_PUSHBYTES_8 OP_PUSHBYTES_74 OP_PUSHBYTES_1 OP_PUSHBYTES_0 OP_PUSHBYTES_0
-        OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0 OP_PUSHBYTES_0
-        OP_CAT
-    }
+    let witness_program =
+        WitnessProgram::p2tr(&secp, internal_key, taproot_spend_info.merkle_root());
+    let script_pub_key = ScriptBuf::new_witness_program(&witness_program);
+    script_pub_key
 }
 
-/// Step 3: deal with the second output via the new and old state hash, computing the new state's script.
-///
-/// Hint:
-/// - new_state_hash
-/// - old_state_hash
-///
-/// Input:
-/// - preimage_head
-/// - pubkey
-/// - first_output
-/// - dust for second_output
-///
-/// Output:
-/// - pubkey
-/// - old_state_hash
-/// - preimage_head | Hash(first output | second_output)
-///
-/// Altstack:
-/// - new_state_hash
-/// - old_state_hash
-///
-pub fn step3() -> Script {
-    script! {
-        // script hash header
-        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_36
+/// Compute the control block and script.
+pub fn get_control_block_and_script<T: CovenantProgram>(id: usize) -> (Vec<u8>, Script) {
+    let mut map = TAPROOT_SPEND_INFOS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap();
+    let taproot_spend_info = map
+        .entry(T::CACHE_NAME)
+        .or_insert_with(compute_taproot_spend_info::<T>);
 
-        // get a hint: the new state hash
-        OP_HINT
-        OP_SIZE 32 OP_EQUALVERIFY
-        // save the new state hash to the altstack
-        OP_DUP OP_TOALTSTACK
+    let mut map2 = SCRIPT_MAPS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap();
+    let script = map2
+        .entry(T::CACHE_NAME)
+        .or_insert_with(T::get_all_scripts)
+        .get(&id)
+        .unwrap()
+        .clone();
 
-        // get a hint: the old state hash
-        OP_HINT
-        OP_SIZE 32 OP_EQUALVERIFY
-        // save the old state hash in the altstack for later use
-        OP_DUP OP_TOALTSTACK
-        OP_TOALTSTACK
+    let script = script! {
+        covenant
+        { script.clone() }
+    };
 
-        // get a hint: the randomizer for this transaction (4 bytes)
-        OP_HINT
-        OP_SIZE 4 OP_EQUALVERIFY
-        OP_CAT3
+    let mut control_block_bytes = Vec::new();
+    taproot_spend_info
+        .control_block(&(script.clone(), LeafVersion::TapScript))
+        .unwrap()
+        .encode(&mut control_block_bytes)
+        .unwrap();
 
-        OP_SHA256
-
-        OP_PUSHBYTES_3 OP_PUSHBYTES_34 OP_PUSHBYTES_0 OP_PUSHBYTES_32
-        OP_SWAP OP_CAT3
-
-        OP_SHA256
-        OP_ROT OP_SWAP OP_CAT2
-
-        OP_FROMALTSTACK OP_SWAP
-    }
+    (control_block_bytes, script)
 }
 
-/// Step 4: provide the original data of the input.
-///
-/// Hint:
-/// - old_txid
-/// - old_amount
-///
-/// Input:
-/// - pubkey
-/// - old_state_hash
-/// - preimage_head | Hash(first output | second_output)
-///
-/// Output:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-/// - preimage_head | Hash(first output | second_output) | this_input
-///
-/// Altstack:
-/// - new_state_hash
-/// - old_state_hash
-///
-pub fn step4() -> Script {
-    script! {
-        { tap_csv_preimage::Step7SpendTypeGadget::from_constant(1, false) } OP_CAT2
+/// Generate the new transaction and return the new transaction as well as the randomizer
+pub fn get_tx<T: CovenantProgram>(
+    info: &CovenantInput,
+    id: usize,
+    old_state: &T::State,
+    new_state: &T::State,
+) -> (TxTemplate, u32) {
+    let script_pub_key = get_script_pub_key::<T>();
+    let (control_block_bytes, script) = get_control_block_and_script::<T>(id);
 
-        // get a hint: previous tx's txid
-        OP_HINT
-        OP_SIZE 32 OP_EQUALVERIFY
+    let tap_leaf_hash = TapLeafHash::from_script(&script, LeafVersion::TapScript);
 
-        // save a copy to altstack
-        OP_DUP OP_TOALTSTACK
+    // Initialize a new transaction.
+    let mut tx = Transaction {
+        version: Version::ONE,
+        lock_time: LockTime::ZERO,
+        input: vec![],
+        output: vec![],
+    };
 
-        // require the output index be 0
-        { tap_csv_preimage::step8_data_input_part_if_anyonecanpay::step1_outpoint::Step2IndexGadget::from_constant(0) }
-        OP_CAT3
+    // Push the previous program as the first input, with the witness left blank as a placeholder.
+    tx.input.push(TxIn {
+        previous_output: OutPoint::new(info.old_txid.clone(), 0),
+        script_sig: ScriptBuf::new(),
+        sequence: Sequence::default(),
+        witness: Witness::new(), // placeholder
+    });
 
-        // get a hint: previous tx's amount
-        OP_HINT
-        OP_SIZE 8 OP_EQUALVERIFY
-        OP_DUP OP_TOALTSTACK
-        OP_CAT2
-
-        // add the script pub key
-        2 OP_PICK
-        OP_PUSHBYTES_1 OP_PUSHBYTES_34 OP_SWAP
-        OP_CAT3
-
-        // require the input sequence number be 0xffffffff
-        { tap_csv_preimage::step8_data_input_part_if_anyonecanpay::Step4SequenceGadget::from_constant(&Sequence::default()) }
-        OP_CAT2
-
-        OP_FROMALTSTACK OP_SWAP
-        OP_FROMALTSTACK OP_SWAP
+    // If there is an optional deposit input, include it as well.
+    if let Some(input) = &info.optional_deposit_input {
+        tx.input.push(input.clone());
     }
-}
 
-/// Step 5: provide the extension data.
-///
-/// Hint:
-/// - tap leaf hash
-///
-/// Input:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-/// - preimage_head | Hash(first output | second_output) | this_input
-///
-/// Output:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-/// - preimage_head | Hash(first output | second_output) | this_input | ext
-///
-/// Altstack:
-/// - new_state_hash
-/// - old_state_hash
-///
-pub fn step5() -> Script {
-    script! {
-        // get a hint: tap leaf hash
-        OP_HINT
-        OP_SIZE 32 OP_EQUALVERIFY
+    // Push the first output, which is the new program (and the only change is in the balance).
+    tx.output.push(TxOut {
+        value: Amount::from_sat(info.new_balance),
+        script_pubkey: script_pub_key.clone(),
+    });
 
-        { tap_csv_preimage::step12_ext::Step2KeyVersionGadget::from_constant(0) }
-        { tap_csv_preimage::step12_ext::Step3CodeSepPosGadget::no_code_sep_executed() }
-        OP_CAT4
+    let old_state_hash = T::get_hash(old_state);
+    let new_state_hash = T::get_hash(new_state);
+
+    // Start the search of a working randomizer from 0.
+    let mut randomizer = 0u32;
+
+    // Initialize a placeholder for e, which is the signature element "e" in Schnorr signature.
+    // Finding e relies on trial-and-error. Specifically, e is a tagged hash of the signature preimage,
+    // and the signature preimage is calculated by serializing the transaction in a specific way.
+    let e;
+    loop {
+        let mut script_bytes = vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()];
+        script_bytes.extend_from_slice(&new_state_hash);
+        script_bytes.extend_from_slice(&randomizer.to_le_bytes());
+
+        // Generate the corresponding caboose with the new counter.
+        let witness_program = WitnessProgram::p2wsh(&ScriptBuf::from_bytes(script_bytes));
+
+        // Temporarily insert this output.
+        // If this output doesn't work, in a later step, we will revert the insertion and remove this
+        // output from the transaction.
+        tx.output.push(TxOut {
+            value: Amount::from_sat(DUST_AMOUNT),
+            script_pubkey: ScriptBuf::new_witness_program(&witness_program),
+        });
+
+        // Initialize the SighashCache object for computing the signature preimage.
+        let mut sighashcache = SighashCache::new(tx.clone());
+
+        // Compute the taproot hash assuming AllPlusAnyoneCanPay.
+        let hash = AsRef::<[u8]>::as_ref(
+            &sighashcache
+                .taproot_script_spend_signature_hash(
+                    0,
+                    &Prevouts::One(
+                        0,
+                        &TxOut {
+                            value: Amount::from_sat(info.old_balance),
+                            script_pubkey: script_pub_key.clone(),
+                        },
+                    ),
+                    tap_leaf_hash,
+                    TapSighashType::AllPlusAnyoneCanPay,
+                )
+                .unwrap(),
+        )
+        .to_vec();
+
+        // Compute the tagged hash of the signature preimage.
+        let bip340challenge_prefix = get_hashed_tag("BIP0340/challenge");
+        let mut sha256 = sha2::Sha256::new();
+        Digest::update(&mut sha256, &bip340challenge_prefix);
+        Digest::update(&mut sha256, &bip340challenge_prefix);
+        Digest::update(&mut sha256, SECP256K1_GENERATOR.as_slice());
+        Digest::update(&mut sha256, SECP256K1_GENERATOR.as_slice());
+        Digest::update(&mut sha256, hash);
+        let e_expected = sha256.finalize().to_vec();
+
+        // If the signature preimage ends with 0x01 (which is consistent to the Schnorr trick),
+        // we will accept this randomizer.
+        //
+        // Note: this is in fact not a strict requirement that it needs to be ending at 0x01.
+        // Nevertheless, requiring so makes sure that we can avoid the corner case (ending at 0xff),
+        // and it is consistent with the Schnorr trick article.
+        if e_expected[31] == 0x01 {
+            e = Some(e_expected);
+            break;
+        } else {
+            // Remove the nonfunctional output and retry.
+            tx.output.pop().unwrap();
+            randomizer += 1;
+        }
     }
-}
 
-/// Step 6: verify the reflection using the Schnorr trick.
-///
-/// Hint:
-/// - the SHA256 BIP-340 challenge hash without the last byte (which should be 0x01)
-///
-/// Input:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-/// - preimage_head | Hash(first output | second_output) | this_input | ext
-///
-/// Output:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-///
-/// Altstack:
-/// - new_state_hash
-/// - old_state_hash
-///
-/// The script fails if the preimage doesn't match the transaction.
-///
-pub fn step6() -> Script {
-    // Obtain the secp256k1 dummy generator, which would be point R in the signature, as well as
-    // the public key.
-    let secp256k1_generator = SECP256K1_GENERATOR.clone();
+    // now start preparing the witness
+    let mut script_execution_witness = Vec::<Vec<u8>>::new();
 
-    script! {
-        { TaggedHashGadget::from_provided(&HashTag::TapSighash) }
+    // new balance (8 bytes)
+    script_execution_witness.push(info.new_balance.to_le_bytes().to_vec());
 
-        { secp256k1_generator.clone() }
-        OP_DUP OP_TOALTSTACK
-        OP_DUP OP_TOALTSTACK
+    // this script's scriptpubkey (34 bytes)
+    script_execution_witness.push(script_pub_key.to_bytes());
 
-        OP_DUP OP_ROT OP_CAT3
+    // the new counter hash
+    script_execution_witness.push(new_state_hash.clone());
 
-        { TaggedHashGadget::from_provided(&HashTag::BIP340Challenge) }
+    // the old counter hash
+    script_execution_witness.push(old_state_hash.clone());
 
-        // get a hint: the sha256 without the last byte
-        OP_HINT
-        OP_SIZE 31 OP_EQUALVERIFY
+    // the randomizer (4 bytes)
+    script_execution_witness.push(randomizer.to_le_bytes().to_vec());
 
-        OP_DUP { 1 } OP_CAT
-        OP_ROT OP_EQUALVERIFY
+    // previous tx's txid (32 bytes)
+    script_execution_witness.push(AsRef::<[u8]>::as_ref(&info.old_txid).to_vec());
 
-        OP_FROMALTSTACK OP_SWAP
+    // previous balance (8 bytes)
+    script_execution_witness.push(info.old_balance.to_le_bytes().to_vec());
 
-        OP_PUSHBYTES_2 OP_PUSHBYTES_2 OP_RIGHT
-        OP_CAT3
+    // tap leaf hash (32 bytes)
+    script_execution_witness.push(AsRef::<[u8]>::as_ref(&tap_leaf_hash).to_vec());
 
-        OP_FROMALTSTACK
-        OP_CHECKSIGVERIFY
+    // the sha256 without the last byte (31 bytes)
+    script_execution_witness.push(e.unwrap()[0..31].to_vec());
+
+    // the first outpoint (32 + 4 = 36 bytes)
+    {
+        let mut bytes = vec![];
+        info.input_outpoint1.consensus_encode(&mut bytes).unwrap();
+
+        script_execution_witness.push(bytes);
     }
-}
 
-/// Step 7: fill in the old transaction's version and input.
-///
-/// Below are all related to the old transaction.
-///
-/// Hint:
-/// - first input's outpoint
-/// - second input's outpoint (which can be an empty string if there is no second input)
-///
-/// Input:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-///
-/// Output:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-/// - version | inputs
-///
-/// Altstack:
-/// - new_state_hash
-/// - old_state_hash
-///
-pub fn step7() -> Script {
-    script! {
-        { tx::Step1VersionGadget::from_constant(&Version::ONE) }
+    // the second outpoint (0 or 36 bytes)
+    {
+        if info.input_outpoint2.is_some() {
+            let mut bytes = vec![];
+            info.input_outpoint2
+                .unwrap()
+                .consensus_encode(&mut bytes)
+                .unwrap();
 
-        // Below all are related to the old transaction.
-
-        // get a hint: first input's outpoint
-        OP_HINT
-        OP_SIZE 36 OP_EQUALVERIFY
-
-        // get a hint: second input's outpoint (an empty string if the second input is not present)
-        OP_HINT
-        OP_SIZE 0 OP_EQUAL OP_TOALTSTACK
-        OP_SIZE 36 OP_EQUAL OP_FROMALTSTACK OP_BOOLOR OP_VERIFY
-
-        OP_SIZE 0 OP_EQUAL
-        OP_IF
-            OP_DROP
-            OP_PUSHBYTES_5 OP_PUSHBYTES_0 OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE
-            OP_CAT
-            { tx::Step2InCounterGadget::from_constant(1) }
-        OP_ELSE
-            OP_TOALTSTACK
-            OP_PUSHBYTES_5 OP_PUSHBYTES_0 OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE
-            OP_DUP
-            OP_FROMALTSTACK OP_SWAP
-            OP_CAT4
-            { tx::Step2InCounterGadget::from_constant(2) }
-        OP_ENDIF
-        OP_SWAP OP_CAT
-        OP_CAT2
+            script_execution_witness.push(bytes);
+        } else {
+            script_execution_witness.push(vec![]);
+        }
     }
-}
 
-/// Step 8: fill in the old transaction's output and locktime.
-///
-/// Hint:
-/// - old_randomizer
-///
-/// Input:
-/// - pubkey
-/// - old_state_hash
-/// - old_amount
-/// - old_txid
-/// - version | inputs
-///
-/// Output:
-/// - old_txid
-/// - version | inputs | output | locktime
-///
-/// Altstack:
-/// - new_state_hash
-/// - old_state_hash
-///
-pub fn step8() -> Script {
-    script! {
-        { tx::Step4OutCounterGadget::from_constant(2) }
-        OP_CAT2
+    // previous randomizer
+    script_execution_witness.push(info.old_randomizer.to_le_bytes().to_vec());
 
-        // get the previous amount
-        2 OP_ROLL
-        OP_CAT2
+    // application-specific witnesses
+    let application_witness = convert_to_witness(script! {
+        { old_state.clone() }
+        { new_state.clone() }
+    })
+    .unwrap();
 
-        // get the script pub key
-        3 OP_ROLL
-        OP_PUSHBYTES_1 OP_PUSHBYTES_34 OP_SWAP
-        OP_CAT3
+    script_execution_witness.extend_from_slice(&application_witness);
 
-        { tx::step5_output::Step1AmountGadget::from_constant(&Amount::from_sat(DUST_AMOUNT)) }
-        OP_CAT2
-
-        // push the script hash header
-        OP_PUSHBYTES_2 OP_RETURN OP_PUSHBYTES_36
-        3 OP_ROLL
-
-        // get a hint: the randomizer for previous transaction (4 bytes)
-        OP_HINT
-        OP_SIZE 4 OP_EQUALVERIFY
-        OP_CAT3
-        OP_SHA256
-
-        OP_PUSHBYTES_3 OP_PUSHBYTES_34 OP_PUSHBYTES_0 OP_PUSHBYTES_32
-        OP_SWAP OP_CAT3
-
-        { tx::Step6LockTimeGadget::from_constant_absolute(&LockTime::ZERO) }
-        OP_CAT2
+    // Construct the witness that will be included in the TxIn.
+    let mut script_tx_witness = Witness::new();
+    // all the initial stack elements
+    for elem in script_execution_witness.iter() {
+        script_tx_witness.push(elem);
     }
-}
+    // the full script
+    script_tx_witness.push(script);
+    // the control block bytes
+    script_tx_witness.push(control_block_bytes);
 
-/// Step 9: check against the old txid.
-///
-/// Hint:
-/// - old_randomizer
-///
-/// Input:
-/// - old_txid
-/// - version | inputs | output | locktime
-///
-/// Output:
-/// - old_state_hash
-/// - new_state_hash
-///
+    // Include the witness in the TxIn.
+    tx.input[0].witness = script_tx_witness;
 
-pub fn step9() -> Script {
-    script! {
-        OP_SHA256
-        OP_SHA256
-        OP_EQUALVERIFY
+    // Prepare the TxTemplate.
+    let tx_template = TxTemplate {
+        tx,
+        prevouts: vec![TxOut {
+            value: Amount::from_sat(info.old_balance),
+            script_pubkey: script_pub_key.clone(),
+        }],
+        input_idx: 0,
+        taproot_annex_scriptleaf: Some((tap_leaf_hash.clone(), None)),
+    };
 
-        OP_FROMALTSTACK OP_FROMALTSTACK
-    }
-}
-
-/// Implementation of a standard covenant.
-pub fn covenant() -> Script {
-    script! {
-        step1
-        // [..., preimage_head ]
-
-        step2
-        // [..., preimage_head, pubkey, first_output | dust ]
-
-        step3
-        // [..., pubkey, old_state_hash, preimage_head | Hash(first_output | second_output) ]
-
-        step4
-        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input ]
-
-        step5
-        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input | ext ]
-
-        step6
-        // checksigverify done
-        // [..., pubkey, old_state_hash, old_amount, old_txid ]
-
-        step7
-        // [..., pubkey, old_state_hash, old_amount, old_txid, version | inputs ]
-
-        step8
-        // [..., pubkey, old_state_hash, old_amount, old_txid, version | inputs | output | locktime ]
-
-        step9
-        /// [old_state_hash, new_state_hash]
-    }
+    (tx_template, randomizer)
 }
