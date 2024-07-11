@@ -148,7 +148,7 @@ impl CovenantProgram for CounterProgram {
 #[cfg(test)]
 mod test {
     use crate::counter::{CounterInput, CounterProgram, CounterState};
-    use covenants_gadgets::test::simulation_test;
+    use covenants_gadgets::test::{simulation_test, SimulationInstruction};
     use rand::prelude::SliceRandom;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
@@ -164,7 +164,11 @@ mod test {
             } else {
                 CounterInput(None)
             };
-            Some((id, input))
+            Some(SimulationInstruction::<CounterProgram> {
+                program_index: id,
+                fee: 3000,
+                program_input: input,
+            })
         };
 
         simulation_test::<CounterProgram>(&mut test_generator);
