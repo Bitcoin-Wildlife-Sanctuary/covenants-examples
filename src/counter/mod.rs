@@ -1,6 +1,5 @@
-use crate::common::CovenantProgram;
-use crate::treepp::pushable::{Builder, Pushable};
-use crate::treepp::*;
+use covenants_gadgets::CovenantProgram;
+use covenants_gadgets::treepp::{pushable::*, *};
 use anyhow::Result;
 use bitcoin_scriptexec::utils::scriptint_vec;
 use covenants_gadgets::utils::pseudo::OP_HINT;
@@ -151,7 +150,7 @@ impl CovenantProgram for CounterProgram {
 
 #[cfg(test)]
 mod test {
-    use crate::common::test::simulation_test;
+    use covenants_gadgets::test::simulation_test;
     use crate::counter::{CounterInput, CounterProgram, CounterState};
     use rand::prelude::SliceRandom;
     use rand::{Rng, SeedableRng};

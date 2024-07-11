@@ -11,13 +11,3 @@ pub static SECP256K1_GENERATOR: Lazy<Vec<u8>> = Lazy::new(|| {
 
 /// The counter example.
 pub mod counter;
-
-/// Common covenant gadget functions (to be relocated to `covenants-gadgets`).
-pub mod common;
-
-pub(crate) mod treepp {
-    pub use bitcoin_script::{define_pushable, script};
-
-    define_pushable!();
-    pub use bitcoin::ScriptBuf as Script;
-}

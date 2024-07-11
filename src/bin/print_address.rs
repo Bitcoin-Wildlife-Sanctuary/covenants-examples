@@ -1,7 +1,7 @@
 use bitcoin::hashes::Hash;
 use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_RETURN};
 use bitcoin::{Address, Network, ScriptBuf, WScriptHash};
-use covenants_examples::common::{get_script_pub_key, CovenantProgram};
+use covenants_gadgets::{get_script_pub_key, CovenantProgram};
 use covenants_examples::counter::CounterProgram;
 
 fn main() {
