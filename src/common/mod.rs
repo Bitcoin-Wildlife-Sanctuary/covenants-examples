@@ -10,6 +10,9 @@ use covenants_gadgets::utils::pseudo::{OP_CAT2, OP_CAT3, OP_CAT4, OP_HINT};
 use covenants_gadgets::wizards::{tap_csv_preimage, tx};
 use std::collections::BTreeMap;
 
+/// The dust amount for a P2WSH transaction.
+pub const DUST_AMOUNT: u64 = 330;
+
 /// Trait for a covenant program.
 pub trait CovenantProgram {
     /// Type of the state for this covenant program.
@@ -276,6 +279,10 @@ pub fn step5() -> Script {
 /// - old_amount
 /// - old_txid
 ///
+/// Altstack:
+/// - new_state_hash
+/// - old_state_hash
+///
 /// The script fails if the preimage doesn't match the transaction.
 ///
 pub fn step6() -> Script {
@@ -311,35 +318,42 @@ pub fn step6() -> Script {
     }
 }
 
-/// Implementation of a standard covenant.
-pub fn covenant() -> Script {
+/// Step 7: fill in the old transaction's version and input.
+///
+/// Below are all related to the old transaction.
+///
+/// Hint:
+/// - first input's outpoint
+/// - second input's outpoint (which can be an empty string if there is no second input)
+///
+/// Input:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+///
+/// Output:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+/// - version | inputs
+///
+/// Altstack:
+/// - new_state_hash
+/// - old_state_hash
+///
+pub fn step7() -> Script {
     script! {
-        step1
-        // [..., preimage_head]
-
-        step2
-        // [..., preimage_head, pubkey, first_output | dust]
-
-        step3
-        // [..., pubkey, old_state_hash, preimage_head | Hash(first_output | second_output)]
-
-        step4
-        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input ]
-
-        step5
-        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input | ext ]
-
-        step6
-        // checksigverify done
-        // [..., pubkey, old_state_hash, old_amount, old_txid]
-
         { tx::Step1VersionGadget::from_constant(&Version::ONE) }
+
+        // Below all are related to the old transaction.
 
         // get a hint: first input's outpoint
         OP_HINT
         OP_SIZE 36 OP_EQUALVERIFY
 
-        // get a hint: second input's outpoint
+        // get a hint: second input's outpoint (an empty string if the second input is not present)
         OP_HINT
         OP_SIZE 0 OP_EQUAL OP_TOALTSTACK
         OP_SIZE 36 OP_EQUAL OP_FROMALTSTACK OP_BOOLOR OP_VERIFY
@@ -350,7 +364,6 @@ pub fn covenant() -> Script {
             OP_PUSHBYTES_5 OP_PUSHBYTES_0 OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE
             OP_CAT
             { tx::Step2InCounterGadget::from_constant(1) }
-            OP_SWAP OP_CAT
         OP_ELSE
             OP_TOALTSTACK
             OP_PUSHBYTES_5 OP_PUSHBYTES_0 OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE OP_INVALIDOPCODE
@@ -358,16 +371,36 @@ pub fn covenant() -> Script {
             OP_FROMALTSTACK OP_SWAP
             OP_CAT4
             { tx::Step2InCounterGadget::from_constant(2) }
-            OP_SWAP OP_CAT
         OP_ENDIF
+        OP_SWAP OP_CAT
         OP_CAT2
+    }
+}
 
+/// Step 8: fill in the old transaction's output and locktime.
+///
+/// Hint:
+/// - old_randomizer
+///
+/// Input:
+/// - pubkey
+/// - old_state_hash
+/// - old_amount
+/// - old_txid
+/// - version | inputs
+///
+/// Output:
+/// - old_txid
+/// - version | inputs | output | locktime
+///
+/// Altstack:
+/// - new_state_hash
+/// - old_state_hash
+///
+pub fn step8() -> Script {
+    script! {
         { tx::Step4OutCounterGadget::from_constant(2) }
         OP_CAT2
-
-        // current stack body:
-        //   this scriptpubkey, previous hash, previous tx's amount, previous tx's txid
-        //   txid preimage (1-4)
 
         // get the previous amount
         2 OP_ROLL
@@ -396,7 +429,25 @@ pub fn covenant() -> Script {
 
         { tx::Step6LockTimeGadget::from_constant_absolute(&LockTime::ZERO) }
         OP_CAT2
+    }
+}
 
+/// Step 9: check against the old txid.
+///
+/// Hint:
+/// - old_randomizer
+///
+/// Input:
+/// - old_txid
+/// - version | inputs | output | locktime
+///
+/// Output:
+/// - old_state_hash
+/// - new_state_hash
+///
+
+pub fn step9() -> Script {
+    script! {
         OP_SHA256
         OP_SHA256
         OP_EQUALVERIFY
@@ -405,5 +456,35 @@ pub fn covenant() -> Script {
     }
 }
 
-/// The dust amount for a taproot transaction.
-pub const DUST_AMOUNT: u64 = 330;
+/// Implementation of a standard covenant.
+pub fn covenant() -> Script {
+    script! {
+        step1
+        // [..., preimage_head ]
+
+        step2
+        // [..., preimage_head, pubkey, first_output | dust ]
+
+        step3
+        // [..., pubkey, old_state_hash, preimage_head | Hash(first_output | second_output) ]
+
+        step4
+        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input ]
+
+        step5
+        // [..., pubkey, old_state_hash, old_amount, old_txid, preimage_head | Hash(first_output | second_output) | this_input | ext ]
+
+        step6
+        // checksigverify done
+        // [..., pubkey, old_state_hash, old_amount, old_txid ]
+
+        step7
+        // [..., pubkey, old_state_hash, old_amount, old_txid, version | inputs ]
+
+        step8
+        // [..., pubkey, old_state_hash, old_amount, old_txid, version | inputs | output | locktime ]
+
+        step9
+        /// [old_state_hash, new_state_hash]
+    }
+}
