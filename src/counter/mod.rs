@@ -164,7 +164,7 @@ mod test {
             } else {
                 CounterInput(None)
             };
-            (id, input)
+            Some((id, input))
         };
 
         simulation_test::<CounterProgram>(&mut test_generator);
