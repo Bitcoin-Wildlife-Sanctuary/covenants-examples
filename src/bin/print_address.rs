@@ -1,8 +1,8 @@
 use bitcoin::hashes::Hash;
 use bitcoin::opcodes::all::{OP_PUSHBYTES_36, OP_RETURN};
 use bitcoin::{Address, Network, ScriptBuf, WScriptHash};
-use covenants_gadgets::{get_script_pub_key, CovenantProgram};
 use covenants_examples::counter::CounterProgram;
+use covenants_gadgets::{get_script_pub_key, CovenantProgram};
 
 fn main() {
     let script_pub_key = get_script_pub_key::<CounterProgram>();

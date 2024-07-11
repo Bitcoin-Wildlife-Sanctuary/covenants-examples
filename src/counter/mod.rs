@@ -1,8 +1,8 @@
-use covenants_gadgets::CovenantProgram;
-use covenants_gadgets::treepp::{pushable::*, *};
+use crate::treepp::*;
 use anyhow::Result;
 use bitcoin_scriptexec::utils::scriptint_vec;
 use covenants_gadgets::utils::pseudo::OP_HINT;
+use covenants_gadgets::CovenantProgram;
 use sha2::digest::Update;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -17,10 +17,11 @@ pub struct CounterState {
     pub counter: usize,
 }
 
-impl Pushable for CounterState {
-    fn bitcoin_script_push(&self, mut builder: Builder) -> Builder {
-        builder = self.counter.bitcoin_script_push(builder);
-        builder
+impl Into<Script> for CounterState {
+    fn into(self) -> Script {
+        script! {
+            { self.counter }
+        }
     }
 }
 
@@ -28,12 +29,15 @@ impl Pushable for CounterState {
 #[derive(Clone)]
 pub struct CounterInput(Option<usize>);
 
-impl Pushable for CounterInput {
-    fn bitcoin_script_push(&self, mut builder: Builder) -> Builder {
+impl Into<Script> for CounterInput {
+    fn into(self) -> Script {
         if let Some(v) = self.0 {
-            builder = (v as u32).bitcoin_script_push(builder);
+            script! {
+                { v }
+            }
+        } else {
+            script! {}
         }
-        builder
     }
 }
 
@@ -150,8 +154,8 @@ impl CovenantProgram for CounterProgram {
 
 #[cfg(test)]
 mod test {
-    use covenants_gadgets::test::simulation_test;
     use crate::counter::{CounterInput, CounterProgram, CounterState};
+    use covenants_gadgets::test::simulation_test;
     use rand::prelude::SliceRandom;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
