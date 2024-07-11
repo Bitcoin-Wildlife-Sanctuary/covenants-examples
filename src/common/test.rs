@@ -15,10 +15,9 @@ use rand_chacha::ChaCha20Rng;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub(crate) fn simulation_test<T: CovenantProgram, F>(test_generator: &mut F)
-where
-    F: FnMut(&T::State) -> (usize, T::Input),
-{
+pub(crate) fn simulation_test<T: CovenantProgram>(
+    test_generator: &mut impl FnMut(&T::State) -> (usize, T::Input),
+) {
     let policy = Policy::default().set_fee(1).set_max_tx_weight(400000);
 
     let prng = Rc::new(RefCell::new(ChaCha20Rng::seed_from_u64(0)));
