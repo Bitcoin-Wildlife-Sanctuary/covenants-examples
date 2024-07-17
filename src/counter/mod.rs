@@ -1,8 +1,8 @@
 use crate::treepp::*;
 use anyhow::Result;
 use bitcoin_scriptexec::utils::scriptint_vec;
+use covenants_gadgets::covenant_program::CovenantProgram;
 use covenants_gadgets::utils::pseudo::OP_HINT;
-use covenants_gadgets::CovenantProgram;
 use sha2::digest::Update;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -54,6 +54,13 @@ impl CovenantProgram for CounterProgram {
 
     fn get_hash(state: &Self::State) -> Vec<u8> {
         let mut sha256 = Sha256::new();
+        Update::update(&mut sha256, &scriptint_vec(state.counter as i64));
+        sha256.finalize().to_vec()
+    }
+
+    fn get_merged_hash(state: &Self::State, hash_bytes: Vec<u8>) -> Vec<u8> {
+        let mut sha256 = Sha256::new();
+        Update::update(&mut sha256, hash_bytes.as_slice());
         Update::update(&mut sha256, &scriptint_vec(state.counter as i64));
         sha256.finalize().to_vec()
     }
@@ -171,6 +178,6 @@ mod test {
             })
         };
 
-        simulation_test::<CounterProgram>(100, &mut test_generator);
+        simulation_test::<CounterProgram>(true, 100, &mut test_generator);
     }
 }
