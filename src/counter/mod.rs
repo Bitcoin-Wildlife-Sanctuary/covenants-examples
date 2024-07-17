@@ -178,6 +178,6 @@ mod test {
             })
         };
 
-        simulation_test::<CounterProgram>(true, 100, &mut test_generator);
+        simulation_test::<CounterProgram>(false, 100, &mut test_generator);
     }
 }
