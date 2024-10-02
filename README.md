@@ -1,5 +1,7 @@
 ## covenants-examples
 
+The example code has been moved into [Bitcoin-Wildlife-Sanctuary/covenants-gadgets](https://github.com/Bitcoin-Wildlife-Sanctuary/covenants-gadgets/) as integration test and this repository is now archived.
+
 This repository includes some examples of [covenants](https://cointelegraph.com/explained/what-are-bitcoin-covenants-and-how-do-they-work) 
 using the Rust crates available in the [Bitcoin Wildlife Sanctuary](https://github.com/Bitcoin-Wildlife-Sanctuary) organization.  
 
